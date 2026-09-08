@@ -66,6 +66,8 @@ MemDepUnit::MemDepUnit(const BaseO3CPUParams &params)
       depPred(_name + ".storesets", params.store_set_clear_period,
               params.SSITSize, params.SSITAssoc, params.SSITReplPolicy,
               params.SSITIndexingPolicy, params.LFSTSize),
+      ssbp(_name + ".ssbps", params.SSBPNumEntries),
+      useSSBP(params.useSSBP),
       iqPtr(NULL),
       stats(nullptr)
 {
@@ -111,6 +113,12 @@ MemDepUnit::init(const BaseO3CPUParams &params, ThreadID tid, CPU *cpu)
 
     std::string stats_group_name = csprintf("MemDepUnit__%i", tid);
     cpu->addStatGroup(stats_group_name.c_str(), &stats);
+
+    //SSBP
+    useSSBP = params.useSSBP;
+    if(useSSBP) {
+        ssbp.init(params.SSBPNumEntries);
+    }
 }
 
 MemDepUnit::MemDepUnitStats::MemDepUnitStats(statistics::Group *parent)
@@ -156,6 +164,9 @@ MemDepUnit::takeOverFrom()
     loadBarrierSNs.clear();
     storeBarrierSNs.clear();
     depPred.clear();
+    //SSBP
+    if(useSSBP)
+        ssbp.clear();
 }
 
 void
@@ -230,7 +241,16 @@ MemDepUnit::insert(const DynInstPtr &inst)
                                 std::begin(storeBarrierSNs),
                                 std::end(storeBarrierSNs));
     } else {
-        InstSeqNum dep = depPred.checkInst(inst->pcState().instAddr());
+        //SSBP
+        InstSeqNum dep = 0;
+        if (useSSBP) {
+            if (inst->isLoad()) {
+                dep = ssbp.checkInst(inst->pcState().instAddr());
+            }
+        }
+         else {
+            dep = depPred.checkInst(inst->pcState().instAddr());
+        }
         if (dep != 0)
             producing_stores.push_back(dep);
     }
@@ -298,7 +318,11 @@ MemDepUnit::insert(const DynInstPtr &inst)
 
         depPred.insertStore(inst->pcState().instAddr(), inst->seqNum,
                 inst->threadNumber);
-
+        //SSBP
+        if(useSSBP){
+            ssbp.insertStore(inst->pcState().instAddr(), inst->seqNum,
+                inst->threadNumber);
+        }
         ++stats.insertedStores;
     } else if (inst->isLoad()) {
         ++stats.insertedLoads;
@@ -575,6 +599,9 @@ MemDepUnit::squash(const InstSeqNum &squashed_num, ThreadID tid)
 
     // Tell the dependency predictor to squash as well.
     depPred.squash(squashed_num, tid);
+    //ssbp
+    if(useSSBP)
+        ssbp.squash(squashed_num, tid);
 }
 
 void
@@ -587,6 +614,11 @@ MemDepUnit::violation(const DynInstPtr &store_inst,
     // Tell the memory dependence unit of the violation.
     depPred.violation(store_inst->pcState().instAddr(),
             violating_load->pcState().instAddr());
+    if(useSSBP){
+        //SSBP
+        ssbp.violation(violating_load->pcState().instAddr());
+    }
+
 }
 
 void
