@@ -54,7 +54,7 @@ SSBP::SSBP(std::string_view name_, int numEntries_)
         fatal("SSBP: number of entries must be a power of 2!\n");
     }
     ssbpEntries.resize(numEntries);
-    
+
 }
 
 SSBP::~SSBP()
