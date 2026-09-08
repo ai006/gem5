@@ -67,7 +67,7 @@ class SSBP : public Named
 
         /** Initializes the store set predictor with the given table sizes. */
         void init(int numEntries_);
-        
+
         /** Predicts whether a load should wait for older in-flight stores.
          *  Keyed on the load PC alone; the predictor never names a specific
          *  store.  The full AMD rule is (C0 > 0 || C3 > 0), where C0 belongs
@@ -94,7 +94,7 @@ class SSBP : public Named
          *  @param aliased True if the load overlapped an older store.
          */
         void loadResolved(Addr load_PC, bool aliased);
-        
+
         /** Resets every entry, discarding all training. */
         void clear();
 
@@ -110,7 +110,7 @@ class SSBP : public Named
         * instruction this PC is dependent upon.  Returns 0 if none.
         */
         InstSeqNum checkInst(Addr PC);
-    
+
     private:
         inline unsigned getIndex(Addr load_PC) const
         { return load_PC & (numEntries - 1); }
@@ -153,7 +153,7 @@ class SSBP : public Named
             InstSeqNum SeqNum = 0;
             ThreadID tid = InvalidThreadID;
          } youngestStore;
- 
+
     public:
         /** Records a store as it enters the scheduler.  StoreSet uses this
          *  to maintain its last-fetched-store table; SSBP uses it to track
