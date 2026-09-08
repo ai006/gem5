@@ -51,6 +51,7 @@
 #include "cpu/inst_seq.hh"
 #include "cpu/o3/dyn_inst_ptr.hh"
 #include "cpu/o3/limits.hh"
+#include "cpu/o3/ssbp.hh"
 #include "cpu/o3/store_set.hh"
 #include "debug/MemDepUnit.hh"
 
@@ -242,6 +243,10 @@ class MemDepUnit
      *  upon.
      */
     StoreSet depPred;
+
+    //Memory Dependence predictor for SSBP
+    SSBP ssbp;
+    bool useSSBP = false;
 
     /** Sequence numbers of outstanding load barriers. */
     std::unordered_set<InstSeqNum> loadBarrierSNs;

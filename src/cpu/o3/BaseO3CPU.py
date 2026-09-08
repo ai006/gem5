@@ -168,6 +168,9 @@ class BaseO3CPU(BaseCPU):
         ),
         "SSIT indexing policy",
     )
+    #SSBP
+    useSSBP = Param.Bool(True, "Parameter to toggle the SSBP on or off")
+    SSBPNumEntries = Param.Unsigned(4096, "Number of SSBP entries")
 
     numRobs = Param.Unsigned(1, "Number of Reorder Buffers")
 
