@@ -45,9 +45,11 @@ SSBP::SSBPEntry::reset()
     setC4(0);
 }
 
-SSBP::SSBP(std::string_view name_, int numEntries_)
+SSBP::SSBP(std::string_view name_, int numEntries_,
+           unsigned dep_check_shift_)
     : Named(name_),
-      numEntries(numEntries_)
+      numEntries(numEntries_),
+      depCheckShift(dep_check_shift_)
 {
     DPRINTF(SSBP, "SSBP: Creating SSBP object.\n");
     if (!isPowerOf2(numEntries)) {
@@ -62,13 +64,14 @@ SSBP::~SSBP()
 }
 
 void
-SSBP::init(int numEntries_)
+SSBP::init(int numEntries_, unsigned dep_check_shift)
 {
     if (!isPowerOf2(numEntries_)) {
         fatal("SSBP: number of entries must be a power of 2!\n");
     }
 
     numEntries = numEntries_;
+    depCheckShift = dep_check_shift;
     ssbpEntries.resize(numEntries);
 }
 
@@ -135,34 +138,81 @@ SSBP::getC4(Addr load_PC) const
     return ssbpEntries[getIndex(load_PC)].getC4();
 }
 
-InstSeqNum
-SSBP::checkInst(Addr PC)
+void
+SSBP::noteDelayedLoad(InstSeqNum sn, Addr load_PC, Addr store_PC)
 {
-    bool prediction = predictWait(PC);
-    InstSeqNum dep = prediction ? youngestStore.SeqNum : 0;
+    DelayedLoad &rec = delayedLoads[sn];
 
-    DPRINTF(SSBP, "Check PC %#x: C3 %i, predict %s, producer [sn:%lli]\n",
-            PC, getC3(PC), prediction ? "wait" : "go", dep);
+    rec.loadPC = load_PC;
+    rec.storePC = store_PC;
+    rec.storeAddr = 0;
+    rec.storeSize = 0;
 
-    return dep;
+    DPRINTF(SSBP, "Delayed load PC %#x [sn:%lli] behind store PC %#x\n",
+            load_PC, sn, store_PC);
 }
 
-
+/** Records the address range of the store a delayed load was waiting
+*  on, captured at the moment that store wakes it. */
 void
-SSBP::insertStore(Addr store_PC, InstSeqNum store_seq_num,
-                         ThreadID tid)
+SSBP::noteProducerAddr(InstSeqNum sn, Addr store_addr,
+                        unsigned store_size)
 {
-    youngestStore.store_PC = store_PC;
-    youngestStore.SeqNum = store_seq_num;
-    youngestStore.tid = tid;
+    auto it = delayedLoads.find(sn);
+
+    // A store wakes every load queued behind it.  Only the ones SSBP
+    // parked are tracked, so a miss here is the common case.
+    if (it == delayedLoads.end())
+        return;
+
+    it->second.storeAddr = store_addr;
+    it->second.storeSize = store_size;
 }
 
+/** A load has executed.  If SSBP parked it, decide whether it
+*  overlapped the store it waited on, apply the type B / F update,
+*  and drop the record. */
 void
-SSBP::squash(InstSeqNum squashed_num, ThreadID tid)
+SSBP::loadExecuted(InstSeqNum sn, Addr load_addr, unsigned load_size)
 {
-    if (youngestStore.SeqNum > squashed_num) {
-        youngestStore.SeqNum = 0;
-    }
+    auto it = delayedLoads.find(sn);
+
+    // SSBP never parked this load, so no prediction was exercised and
+    // the FSM should see no input at all.
+    if (it == delayedLoads.end())
+        return;
+
+    const DelayedLoad &rec = it->second;
+    bool aliased = overlaps(rec, load_addr, load_size);
+
+    loadResolved(rec.loadPC, aliased);
+
+    // Dropping the record here is what stops a load that re-executes
+    // from training twice.
+    delayedLoads.erase(it);
+}
+
+/** Drops a record without training it, for squashed loads. */
+void
+SSBP::forgetDelayedLoad(InstSeqNum sn)
+{
+    delayedLoads.erase(sn);
+}
+
+bool
+SSBP::overlaps(const DelayedLoad &rec, Addr load_addr,
+               unsigned load_size) const
+{
+    // storeSize 0 means the producer never resolved an address.
+    if (rec.storeSize == 0)
+        return false;
+
+    Addr ld_lo = load_addr >> depCheckShift;
+    Addr ld_hi = (load_addr + load_size - 1) >> depCheckShift;
+    Addr st_lo = rec.storeAddr >> depCheckShift;
+    Addr st_hi = (rec.storeAddr + rec.storeSize - 1) >> depCheckShift;
+
+    return st_hi >= ld_lo && st_lo <= ld_hi;
 }
 
 } // namespace o3

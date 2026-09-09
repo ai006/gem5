@@ -66,7 +66,7 @@ MemDepUnit::MemDepUnit(const BaseO3CPUParams &params)
       depPred(_name + ".storesets", params.store_set_clear_period,
               params.SSITSize, params.SSITAssoc, params.SSITReplPolicy,
               params.SSITIndexingPolicy, params.LFSTSize),
-      ssbp(_name + ".ssbps", params.SSBPNumEntries),
+      ssbp(_name + ".ssbps", params.SSBPNumEntries, params.LSQDepCheckShift),
       useSSBP(params.useSSBP),
       iqPtr(NULL),
       stats(nullptr)
@@ -117,7 +117,7 @@ MemDepUnit::init(const BaseO3CPUParams &params, ThreadID tid, CPU *cpu)
     //SSBP
     useSSBP = params.useSSBP;
     if(useSSBP) {
-        ssbp.init(params.SSBPNumEntries);
+        ssbp.init(params.SSBPNumEntries, params.LSQDepCheckShift);
     }
 }
 
@@ -130,7 +130,9 @@ MemDepUnit::MemDepUnitStats::MemDepUnitStats(statistics::Group *parent)
       ADD_STAT(conflictingLoads, statistics::units::Count::get(),
                "Number of conflicting loads."),
       ADD_STAT(conflictingStores, statistics::units::Count::get(),
-               "Number of conflicting stores.")
+               "Number of conflicting stores."),
+      ADD_STAT(ssbpWaitNoProducer, statistics::units::Count::get(),
+               "Number times ssbp predicted wait sans producer.")
 {
 }
 
@@ -139,7 +141,8 @@ MemDepUnit::isDrained() const
 {
     bool drained = instsToReplay.empty()
                  && memDepHash.empty()
-                 && instsToReplay.empty();
+                 && instsToReplay.empty()
+                 && (!useSSBP || ssbp.drained());
     for (int i = 0; i < MaxThreads; ++i)
         drained = drained && instList[i].empty();
 
@@ -151,6 +154,7 @@ MemDepUnit::drainSanityCheck() const
 {
     assert(instsToReplay.empty());
     assert(memDepHash.empty());
+    assert(!useSSBP || ssbp.drained());
     for (int i = 0; i < MaxThreads; ++i)
         assert(instList[i].empty());
     assert(instsToReplay.empty());
@@ -228,6 +232,9 @@ MemDepUnit::insert(const DynInstPtr &inst)
     // Check any barriers and the dependence predictor for any
     // producing memrefs/stores.
     std::vector<InstSeqNum>  producing_stores;
+    //ssbp
+    bool ssbp_predicted_wait = false;
+
     if ((inst->isLoad() || inst->isAtomic()) && hasLoadBarrier()) {
         DPRINTF(MemDepUnit, "%d load barriers in flight\n",
                 loadBarrierSNs.size());
@@ -244,8 +251,20 @@ MemDepUnit::insert(const DynInstPtr &inst)
         //SSBP
         InstSeqNum dep = 0;
         if (useSSBP) {
-            if (inst->isLoad()) {
-                dep = ssbp.checkInst(inst->pcState().instAddr());
+            // SSBP names no store; it answers only "should this load
+            // wait?" To translate that into a dependence we need to
+            // find the youngest older store still in flight.
+            if (inst->isLoad() &&
+                    ssbp.predictWait(inst->pcState().instAddr())) {
+
+                dep = findYoungestOlderStore(inst);
+
+                if (dep != 0) {
+                    ssbp_predicted_wait = true;
+                } else {
+                    // Predicted wait, but nothing older to wait on.
+                    ++stats.ssbpWaitNoProducer;
+                }
             }
         }
          else {
@@ -304,6 +323,15 @@ MemDepUnit::insert(const DynInstPtr &inst)
 
         if (inst->isLoad()) {
             ++stats.conflictingLoads;
+
+            if (ssbp_predicted_wait) {
+
+                assert(store_entries.size() == 1);
+                ssbp.noteDelayedLoad(
+                    inst->seqNum,
+                    inst->pcState().instAddr(),
+                    store_entries.front()->inst->pcState().instAddr());
+            }
         } else {
             ++stats.conflictingStores;
         }
@@ -318,11 +346,6 @@ MemDepUnit::insert(const DynInstPtr &inst)
 
         depPred.insertStore(inst->pcState().instAddr(), inst->seqNum,
                 inst->threadNumber);
-        //SSBP
-        if(useSSBP){
-            ssbp.insertStore(inst->pcState().instAddr(), inst->seqNum,
-                inst->threadNumber);
-        }
         ++stats.insertedStores;
     } else if (inst->isLoad()) {
         ++stats.insertedLoads;
@@ -462,6 +485,9 @@ void
 MemDepUnit::completeInst(const DynInstPtr &inst)
 {
     wakeDependents(inst);
+    //ssbp
+    if (useSSBP && inst->isLoad() && inst->effAddrValid())
+        ssbp.loadExecuted(inst->seqNum, inst->effAddr, inst->effSize);
     completed(inst);
     InstSeqNum barr_sn = inst->seqNum;
 
@@ -487,6 +513,12 @@ MemDepUnit::completeInst(const DynInstPtr &inst)
                                 barrier_type, inst->pcState(), inst->seqNum);
         }
     }
+
+    // SSBP: backstop.  A trained load already erased its own record
+    // above; this catches the ones loadExecuted skipped because their
+    // effective address was never valid, so the map cannot leak.
+    if (useSSBP)
+        ssbp.forgetDelayedLoad(inst->seqNum);
 }
 
 void
@@ -506,6 +538,13 @@ MemDepUnit::wakeDependents(const DynInstPtr &inst)
         if (!woken_inst->inst) {
             // Potentially removed mem dep entries could be on this list
             continue;
+        }
+
+        // The store has executed, so its address is known; the woken load
+        // has not run yet.  This is the only moment both are in hand.
+        if (useSSBP && inst->effAddrValid()) {
+            ssbp.noteProducerAddr(woken_inst->inst->seqNum,
+                                inst->effAddr, inst->effSize);
         }
 
         DPRINTF(MemDepUnit, "Waking up a dependent inst, "
@@ -590,6 +629,9 @@ MemDepUnit::squash(const InstSeqNum &squashed_num, ThreadID tid)
         (*hash_it).second = NULL;
 
         memDepHash.erase(hash_it);
+        //SSBP
+        if (useSSBP)
+            ssbp.forgetDelayedLoad((*squash_it)->seqNum);
 #ifdef GEM5_DEBUG
         MemDepEntry::memdep_erase++;
 #endif
@@ -599,9 +641,10 @@ MemDepUnit::squash(const InstSeqNum &squashed_num, ThreadID tid)
 
     // Tell the dependency predictor to squash as well.
     depPred.squash(squashed_num, tid);
-    //ssbp
-    if(useSSBP)
+    if (useSSBP) {
+        //SSBP
         ssbp.squash(squashed_num, tid);
+    }
 }
 
 void
@@ -680,6 +723,29 @@ MemDepUnit::dumpLists()
 #ifdef GEM5_DEBUG
     cprintf("Memory dependence entries: %i\n", MemDepEntry::memdep_count);
 #endif
+}
+
+InstSeqNum
+MemDepUnit::findYoungestOlderStore(const DynInstPtr &inst)
+{
+    ThreadID tid = inst->threadNumber;
+
+    // instList is in program order, and this inst was appended at
+    // the top of insert(), so walk back from the end and skip it.
+    for (auto it = instList[tid].rbegin();
+            it != instList[tid].rend(); ++it) {
+        if ((*it)->seqNum >= inst->seqNum)
+            continue;
+
+        if (!(*it)->isStore() && !(*it)->isAtomic())
+            continue;
+
+        // Only a store the unit still tracks can be waited on.
+        if (memDepHash.find((*it)->seqNum) != memDepHash.end())
+            return (*it)->seqNum;
+    }
+
+    return 0;
 }
 
 } // namespace o3
