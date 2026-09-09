@@ -162,6 +162,9 @@ class MemDepUnit
     /** Debugging function to dump the lists of instructions. */
     void dumpLists();
 
+    /**[ssbp] Function to find the youngest store older than the load */
+    InstSeqNum findYoungestOlderStore(const DynInstPtr &inst);
+
   private:
 
     /** Completes a memory instruction. */
@@ -281,6 +284,9 @@ class MemDepUnit
         /** Stat for number of conflicting stores that had to wait for a
          *  store. */
         statistics::Scalar conflictingStores;
+        /** Stat for number of times the ssbp predictor predicts wait
+         *  due to a potential dependency and there is no older store */
+        statistics::Scalar ssbpWaitNoProducer;
     } stats;
 };
 

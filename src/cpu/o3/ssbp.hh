@@ -32,6 +32,7 @@
 #include <assert.h>
 #include <cstdint>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "base/intmath.hh"
@@ -61,12 +62,13 @@ class SSBP : public Named
         /** Default constructor.  init() must be called prior to use. */
         SSBP() : Named("SSBP") {};
         /** Creates store set predictor with given table sizes. */
-        SSBP(std::string_view name_, int numEntries_);
+        SSBP(std::string_view name_, int numEntries_,
+                unsigned dep_check_shift_);
         /** Default destructor. */
         ~SSBP();
 
         /** Initializes the store set predictor with the given table sizes. */
-        void init(int numEntries_);
+        void init(int numEntries_, unsigned dep_check_shift);
 
         /** Predicts whether a load should wait for older in-flight stores.
          *  Keyed on the load PC alone; the predictor never names a specific
@@ -105,12 +107,6 @@ class SSBP : public Named
         uint8_t getC3(Addr load_PC) const;
         uint8_t getC4(Addr load_PC) const;
 
-        /** Checks if load isntruction with the given PC is dependent upon
-        * any store.  @return Returns the sequence number of the store
-        * instruction this PC is dependent upon.  Returns 0 if none.
-        */
-        InstSeqNum checkInst(Addr PC);
-
     private:
         inline unsigned getIndex(Addr load_PC) const
         { return load_PC & (numEntries - 1); }
@@ -118,7 +114,10 @@ class SSBP : public Named
 
     private:
         int numEntries = 0;
-        class SSBPEntry{
+        unsigned depCheckShift = 0;
+
+        class SSBPEntry
+        {
             private:
                 uint8_t c3;
                 uint8_t c4;
@@ -133,44 +132,34 @@ class SSBP : public Named
 
         };
         std::vector<SSBPEntry> ssbpEntries;
-        /** Counter limits and update magnitudes (Table I, Table IV) of paper. */
+        /** Counter limits and update magnitudes (Table I, Table IV)
+         *  of paper. */
         static constexpr uint8_t C3Max = 32;
         static constexpr uint8_t C4Max = 3;
         static constexpr uint8_t C3Violation = 15;
         static constexpr uint8_t C3Increment = 16;
 
-        /** The most recently dispatched store.  SSBP predicts only whether a
-         *  load should wait, never which store to wait for, so a predicted
-         *  wait is attached to the youngest store in flight at the time the
-         *  load is dispatched.  Updated by insertStore(), rewound by
-         *  squash().  A sequence number of zero means nothing is being
-         *  tracked, matching the "no dependency" value StoreSet returns.
-         *  The store PC is unused today; PSFP needs it, as that predictor is
-         *  indexed by the store and load addresses together.
-         */
-         struct {
-            Addr store_PC = 0;
-            InstSeqNum SeqNum = 0;
-            ThreadID tid = InvalidThreadID;
-         } youngestStore;
+        struct DelayedLoad
+        {
+            Addr loadPC = 0;
+            Addr storePC = 0;
+            Addr storeAddr = 0;      // filled in when the store wakes the load
+            unsigned storeSize = 0;  // 0 means the store never resolved
+        };
 
+        std::unordered_map<InstSeqNum, DelayedLoad> delayedLoads;
+
+    //The functions listed here are for making the SSBP predictor
+    //work with the current
+    //system of lsq. Non are mentioned in the paper
     public:
-        /** Records a store as it enters the scheduler.  StoreSet uses this
-         *  to maintain its last-fetched-store table; SSBP uses it to track
-         *  the youngest store in flight, which is the store a predicted
-         *  wait gets attached to.  Called from both MemDepUnit::insert and
-         *  MemDepUnit::insertNonSpec, so non-speculative stores are seen
-         *  as well.
-         */
-        void insertStore(Addr store_PC, InstSeqNum store_seq_num,
-                         ThreadID tid);
-
         /** Drops the tracked store if it was squashed.  The C3 and C4
          *  counters are deliberately left alone: real SSBP is not rolled
          *  back on a squash, which is the behaviour the transient execution
          *  attacks rely on.
          */
-        void squash(InstSeqNum squashed_num, ThreadID tid);
+        void squash(InstSeqNum squashed_num, ThreadID tid)
+        {}
 
         /** Notification that a memory op has issued.  StoreSet retires its
          *  last-fetched-store entry here; SSBP keeps no such table, so this
@@ -180,6 +169,39 @@ class SSBP : public Named
         issued(Addr issued_PC, InstSeqNum issued_seq_num, bool is_store)
         {}
 
+        /** Records that SSBP held this load back, and on which store.  The
+         *  address fields stay empty until the store wakes it. */
+        void noteDelayedLoad(InstSeqNum sn, Addr load_PC, Addr store_PC);
+
+        /** Records the address range of the store a delayed load was waiting
+         *  on, captured at the moment that store wakes it. */
+        void noteProducerAddr(InstSeqNum sn, Addr store_addr,
+                         unsigned store_size);
+
+        /** A load has executed.  If SSBP parked it, decide whether it
+        *  overlapped the store it waited on, apply the type B / F update,
+        *  and drop the record. */
+        void loadExecuted(InstSeqNum sn, Addr load_addr, unsigned load_size);
+
+        /** Drops a record without training it, for squashed loads. */
+        void forgetDelayedLoad(InstSeqNum sn);
+
+        /** Decides whether an executed load overlapped the store it
+        *  was made to wait on.  Comparison is done at LSQDepCheckShift
+        *  granularity, so it agrees with LSQUnit::checkViolations rather
+        *  than being byte-exact — 16 bytes by default, which reports
+        *  aliasing more often than the silicon the paper's thresholds
+        *  came from.
+        *  @param rec The delayed-load record, holding the store's range.
+        *  @param load_addr The load's effective address.
+        *  @param load_size The load's access size in bytes.
+        *  @return True if the ranges overlap.  False if the store never
+        *  resolved an address, since there is then nothing to compare against.
+        */
+        bool overlaps(const DelayedLoad &rec, Addr load_addr,
+               unsigned load_size) const;
+
+        bool drained() const { return delayedLoads.empty(); }
 
 
 };
