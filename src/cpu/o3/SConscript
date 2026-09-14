@@ -102,3 +102,5 @@ if env['CONF']['BUILD_ISA']:
     # For backwards compatibility
     SimObject('O3CPU.py', sim_objects=[], tags=['isa'])
     SimObject('O3Checker.py', sim_objects=[], tags=['isa'])
+
+    GTest('ssbp.test', 'ssbp.test.cc', 'ssbp.cc', with_tag('gem5 trace'))
