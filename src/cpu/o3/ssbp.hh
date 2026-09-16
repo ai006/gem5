@@ -40,6 +40,7 @@
 #include "base/types.hh"
 #include "cpu/inst_seq.hh"
 #include "cpu/o3/mem_dep_pred.hh"
+#include "params/SSBP.hh"
 
 
 namespace gem5
@@ -60,16 +61,13 @@ namespace o3
 class SSBP : public MemDepPredictor
 {
     public:
-        /** Default constructor.  init() must be called prior to use. */
-        SSBP() : MemDepPredictor("SSBP") {};
-        /** Creates store set predictor with given table sizes. */
-        SSBP(std::string_view name_, int numEntries_,
-                unsigned dep_check_shift_);
+        typedef SSBPParams Params;
+
+        /** Creates the predictor with the configured table size. */
+        SSBP(const Params &p);
+
         /** Default destructor. */
         ~SSBP();
-
-        /** Initializes the store set predictor with the given table sizes. */
-        void init(int numEntries_, unsigned dep_check_shift);
 
         /** Predicts whether a load should wait for older in-flight stores.
          *  Keyed on the load PC alone; the predictor never names a specific

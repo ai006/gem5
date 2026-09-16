@@ -40,16 +40,13 @@ namespace gem5
 namespace o3
 {
 
-StoreSet::StoreSet(std::string_view name_, uint64_t clear_period,
-                   size_t _SSIT_entries, int _SSIT_assoc,
-                   replacement_policy::Base *_replPolicy,
-                   BaseIndexingPolicy *_indexingPolicy, int _LFST_size)
-  : MemDepPredictor(name_),
-    SSIT("SSIT", _SSIT_entries, _SSIT_assoc,
-	 _replPolicy, _indexingPolicy,
-	 SSITEntry(genTagExtractor(_indexingPolicy))),
-    clearPeriod(clear_period), SSITSize(_SSIT_entries),
-    LFSTSize(_LFST_size)
+StoreSet::StoreSet(const Params &p)
+  : MemDepPredictor(p),
+    SSIT("SSIT", p.SSITSize, p.SSITAssoc,
+         p.SSITReplPolicy, p.SSITIndexingPolicy,
+         SSITEntry(genTagExtractor(p.SSITIndexingPolicy))),
+    clearPeriod(p.clearPeriod), SSITSize(p.SSITSize),
+    LFSTSize(p.LFSTSize)
 {
     DPRINTF(StoreSet, "StoreSet: Creating store set object.\n");
     DPRINTF(StoreSet, "StoreSet: SSIT size: %i, LFST size: %i.\n",
@@ -79,33 +76,6 @@ StoreSet::~StoreSet()
 {
 }
 
-void
-StoreSet::init(uint64_t clear_period, size_t _SSIT_entries,
-               int _SSIT_assoc, replacement_policy::Base *_replPolicy,
-               BaseIndexingPolicy *_indexingPolicy, int _LFST_size)
-{
-    SSITSize = _SSIT_entries;
-    LFSTSize = _LFST_size;
-    clearPeriod = clear_period;
-
-    DPRINTF(StoreSet, "StoreSet: Creating store set object.\n");
-    DPRINTF(StoreSet, "StoreSet: SSIT size: %i, LFST size: %i.\n",
-            SSITSize, LFSTSize);
-
-    SSIT.init(SSITSize, _SSIT_assoc, _replPolicy, _indexingPolicy,
-	      SSITEntry(genTagExtractor(_indexingPolicy)));
-
-    LFST.resize(LFSTSize);
-
-    validLFST.resize(LFSTSize);
-
-    for (int i = 0; i < LFSTSize; ++i) {
-        validLFST[i] = false;
-        LFST[i] = 0;
-    }
-
-    memOpsPred = 0;
-}
 
 
 void

@@ -53,8 +53,74 @@ from m5.proxy import *
 from m5.SimObject import *
 
 
-class MemDepPredictorType(ScopedEnum):
-    vals = ["StoreSet", "SSBP"]
+class MemDepPredictor(SimObject):
+    """Base class for memory dependence predictors.
+
+    One instance per hardware thread, held by that thread's MemDepUnit.
+    The per-thread duplication is deliberate rather than incidental: the
+    AMD predictors this models are partitioned amongst SMT threads, so a
+    single shared instance would be wrong rather than merely different.
+    """
+
+    type = "MemDepPredictor"
+    cxx_class = "gem5::o3::MemDepPredictor"
+    cxx_header = "cpu/o3/mem_dep_pred.hh"
+    abstract = True
+
+
+class StoreSet(MemDepPredictor):
+    """Chrysos and Emer store sets.  gem5's long-standing default.
+
+    The table parameters default to the values declared on the parent CPU
+    so that configurations setting cpu.SSITSize (several shipped ARM core
+    models do) keep working unchanged.  Set them on this object instead to
+    override per predictor.
+    """
+
+    type = "StoreSet"
+    cxx_class = "gem5::o3::StoreSet"
+    cxx_header = "cpu/o3/store_set.hh"
+
+    clearPeriod = Param.Unsigned(
+        Parent.store_set_clear_period,
+        "Number of stores before the predictor is invalidated",
+    )
+    SSITSize = Param.MemorySize(
+        Parent.SSITSize, "Store set ID table size"
+    )
+    SSITAssoc = Param.Unsigned(
+        Parent.SSITAssoc, "SSIT table associativity"
+    )
+    SSITReplPolicy = Param.BaseReplacementPolicy(
+        Parent.SSITReplPolicy, "SSIT replacement policy"
+    )
+    SSITIndexingPolicy = Param.BaseIndexingPolicy(
+        Parent.SSITIndexingPolicy, "SSIT indexing policy"
+    )
+    LFSTSize = Param.Unsigned(
+        Parent.LFSTSize, "Last fetched store table size"
+    )
+
+
+class SSBP(MemDepPredictor):
+    """AMD Zen 3 speculative store bypass predictor.
+
+    Reverse engineered in "Uncovering and Exploiting AMD Speculative
+    Memory Access Predictors for Fun and Profit", HPCA 2024.  Modelled
+    with PSFP absent, so the prediction rule reduces to C3 > 0.
+    """
+
+    type = "SSBP"
+    cxx_class = "gem5::o3::SSBP"
+    cxx_header = "cpu/o3/ssbp.hh"
+
+    numEntries = Param.Unsigned(4096, "Number of SSBP entries")
+    depCheckShift = Param.Unsigned(
+        Parent.LSQDepCheckShift,
+        "Number of places to shift addr before the alias check.  Taken "
+        "from the CPU so that this predictor and LSQUnit::checkViolations "
+        "agree on what counts as aliasing",
+    )
 
 
 class BaseO3CPU(BaseCPU):
@@ -73,6 +139,23 @@ class BaseO3CPU(BaseCPU):
     @classmethod
     def support_take_over(cls):
         return True
+
+    def createThreads(self):
+        super().createThreads()
+
+        # The memory dependence predictor is per thread, so size it the
+        # same way BaseCPU sizes isa and decoder.  Mismatched counts are
+        # an error rather than something to silently pad: a short vector
+        # would leave later threads indexing past the end.
+        if len(self.memDepPredictor) == 0:
+            self.memDepPredictor = [
+                StoreSet() for i in range(self.numThreads)
+            ]
+        elif len(self.memDepPredictor) != int(self.numThreads):
+            raise RuntimeError(
+                "Number of memory dependence predictors doesn't match "
+                "thread count"
+            )
 
     activity = Param.Unsigned(0, "Initial count")
 
@@ -172,14 +255,13 @@ class BaseO3CPU(BaseCPU):
         ),
         "SSIT indexing policy",
     )
-    # Memory dependence predictor selection.  StoreSet is the default so
-    # that a stock configuration matches upstream gem5 exactly.
-    memDepPredictor = Param.MemDepPredictorType(
-        "StoreSet", "Memory dependence predictor to use"
+    # Memory dependence predictor, one per hardware thread.  Left empty
+    # here and filled in by createThreads() below, the same way isa and
+    # decoder are handled in BaseCPU; StoreSet is the default so that a
+    # stock configuration matches upstream gem5 exactly.
+    memDepPredictor = VectorParam.MemDepPredictor(
+        [], "Memory dependence predictor, one per thread"
     )
-
-    # SSBP
-    SSBPNumEntries = Param.Unsigned(4096, "Number of SSBP entries")
 
     numRobs = Param.Unsigned(1, "Number of Reorder Buffers")
 

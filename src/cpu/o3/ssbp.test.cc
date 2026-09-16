@@ -32,6 +32,7 @@
 
 #include "base/types.hh"
 #include "cpu/o3/ssbp.hh"
+#include "params/SSBP.hh"
 
 using namespace gem5;
 using gem5::o3::SSBP;
@@ -61,6 +62,28 @@ constexpr int NumEntries = 4096;
  *  a legal one.
  */
 constexpr unsigned DepCheckShift = 4;
+
+/**
+ * Builds an SSBP without a CPU.
+ *
+ * SSBP is a SimObject, so it takes a generated params struct rather than
+ * loose arguments.  Stack-allocating and filling that struct is the same
+ * trick src/base/filters/base.test.cc uses; eventq_index must be set
+ * because SimObject's constructor reads it.
+ */
+SSBPParams
+testParams(unsigned entries = NumEntries,
+           unsigned shift = DepCheckShift)
+{
+    SSBPParams p;
+
+    p.name = "ssbp.test";
+    p.eventq_index = 0;
+    p.numEntries = entries;
+    p.depCheckShift = shift;
+
+    return p;
+}
 
 /**
  * Drives one load through the predictor and reports the execution type
@@ -123,7 +146,7 @@ run(SSBP &ssbp, Addr pc, const std::string &inputs)
  */
 TEST(SSBP, MinimalViolationSequence)
 {
-    SSBP ssbp("ssbp.test", NumEntries, DepCheckShift);
+    SSBP ssbp(testParams());
 
     EXPECT_EQ(run(ssbp, PcA, "aaa" + std::string(35, 'n')),
               "GGG" + std::string(15, 'F') + std::string(20, 'H'));
@@ -136,7 +159,7 @@ TEST(SSBP, MinimalViolationSequence)
  */
 TEST(SSBP, TrainingPrefix)
 {
-    SSBP ssbp("ssbp.test", NumEntries, DepCheckShift);
+    SSBP ssbp(testParams());
 
     const std::string in = std::string(7, 'n') + 'a' + std::string(7, 'n')
         + 'a' + std::string(7, 'n') + 'a';
@@ -155,7 +178,7 @@ TEST(SSBP, TrainingPrefix)
  */
 TEST(SSBP, C4IsIncrementedBeforeItIsTested)
 {
-    SSBP ssbp("ssbp.test", NumEntries, DepCheckShift);
+    SSBP ssbp(testParams());
 
     EXPECT_EQ(run(ssbp, PcA, "a"), "G");
     EXPECT_EQ(ssbp.getC4(PcA), 1);
@@ -177,7 +200,7 @@ TEST(SSBP, C4IsIncrementedBeforeItIsTested)
  */
 TEST(SSBP, TypeBOnceTrained)
 {
-    SSBP ssbp("ssbp.test", NumEntries, DepCheckShift);
+    SSBP ssbp(testParams());
 
     run(ssbp, PcA, "aaa");
     ASSERT_EQ(ssbp.getC3(PcA), 15);
@@ -189,7 +212,7 @@ TEST(SSBP, TypeBOnceTrained)
 /** C3 is six bits wide and stops at 32 however often type B fires. */
 TEST(SSBP, C3SaturatesAt32)
 {
-    SSBP ssbp("ssbp.test", NumEntries, DepCheckShift);
+    SSBP ssbp(testParams());
 
     run(ssbp, PcA, "aaa");
 
@@ -206,7 +229,7 @@ TEST(SSBP, C3SaturatesAt32)
  */
 TEST(SSBP, C4SaturatesAndNeverResets)
 {
-    SSBP ssbp("ssbp.test", NumEntries, DepCheckShift);
+    SSBP ssbp(testParams());
 
     // violation() is driven directly: once C3 is non-zero the load waits,
     // so no further type G can arise through step().
@@ -234,7 +257,7 @@ TEST(SSBP, C4SaturatesAndNeverResets)
  */
 TEST(SSBP, PsfpFreeBaselineForC0)
 {
-    SSBP ssbp("ssbp.test", NumEntries, DepCheckShift);
+    SSBP ssbp(testParams());
 
     const std::string in = std::string("a") + std::string(4, 'n') + 'a'
         + std::string(4, 'n') + 'a' + std::string(16, 'n');
@@ -247,7 +270,7 @@ TEST(SSBP, PsfpFreeBaselineForC0)
 /** Training one PC must not disturb a PC in a different entry. */
 TEST(SSBP, EntriesAreIndependent)
 {
-    SSBP ssbp("ssbp.test", NumEntries, DepCheckShift);
+    SSBP ssbp(testParams());
 
     run(ssbp, PcA, "aaa");
 
@@ -266,7 +289,7 @@ TEST(SSBP, EntriesAreIndependent)
  */
 TEST(SSBP, CollidingPcsShareAnEntry)
 {
-    SSBP ssbp("ssbp.test", NumEntries, DepCheckShift);
+    SSBP ssbp(testParams());
 
     run(ssbp, PcA, "aaa");
 
@@ -281,7 +304,7 @@ TEST(SSBP, CollidingPcsShareAnEntry)
 /** clear() discards training, including the sticky C4. */
 TEST(SSBP, ClearDiscardsTraining)
 {
-    SSBP ssbp("ssbp.test", NumEntries, DepCheckShift);
+    SSBP ssbp(testParams());
 
     run(ssbp, PcA, "aaa");
     ASSERT_EQ(ssbp.getC3(PcA), 15);
