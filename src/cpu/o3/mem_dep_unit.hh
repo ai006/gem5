@@ -51,8 +51,7 @@
 #include "cpu/inst_seq.hh"
 #include "cpu/o3/dyn_inst_ptr.hh"
 #include "cpu/o3/limits.hh"
-#include "cpu/o3/ssbp.hh"
-#include "cpu/o3/store_set.hh"
+#include "cpu/o3/mem_dep_pred.hh"
 #include "debug/MemDepUnit.hh"
 
 namespace gem5
@@ -94,11 +93,12 @@ class MemDepUnit
     std::string _name;
 
   public:
-    /** Empty constructor. Must call init() prior to using in this case. */
+    /** Empty constructor.  Must call init() prior to use: the predictor
+     *  is built there, since that is the only place the parameters are
+     *  available.  MemDepUnits live in an array inside InstructionQueue,
+     *  so this is the only constructor that ever runs.
+     */
     MemDepUnit();
-
-    /** Constructs a MemDepUnit with given parameters. */
-    MemDepUnit(const BaseO3CPUParams &params);
 
     /** Frees up any memory allocated. */
     ~MemDepUnit();
@@ -243,13 +243,12 @@ class MemDepUnit
     /** The memory dependence predictor.  It is accessed upon new
      *  instructions being added to the IQ, and responds by telling
      *  this unit what instruction the newly added instruction is dependent
-     *  upon.
+     *  upon.  Which predictor is built is chosen by the memDepPredictor
+     *  parameter; it is created in init() and owned per thread, because
+     *  the hardware being modelled partitions these tables amongst SMT
+     *  threads rather than sharing them.
      */
-    StoreSet depPred;
-
-    //Memory Dependence predictor for SSBP
-    SSBP ssbp;
-    bool useSSBP = false;
+    std::unique_ptr<MemDepPredictor> depPred;
 
     /** Sequence numbers of outstanding load barriers. */
     std::unordered_set<InstSeqNum> loadBarrierSNs;
@@ -284,9 +283,9 @@ class MemDepUnit
         /** Stat for number of conflicting stores that had to wait for a
          *  store. */
         statistics::Scalar conflictingStores;
-        /** Stat for number of times the ssbp predictor predicts wait
-         *  due to a potential dependency and there is no older store */
-        statistics::Scalar ssbpWaitNoProducer;
+        /** Stat for number of times the predictor asked for a wait
+         *  but no older store was in flight to wait on. */
+        statistics::Scalar predictedWaitNoProducer;
     } stats;
 };
 

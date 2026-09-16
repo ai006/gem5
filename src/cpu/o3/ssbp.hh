@@ -39,6 +39,7 @@
 #include "base/named.hh"
 #include "base/types.hh"
 #include "cpu/inst_seq.hh"
+#include "cpu/o3/mem_dep_pred.hh"
 
 
 namespace gem5
@@ -56,11 +57,11 @@ namespace o3
  * Profit" by Lyu and Qiu.
  * modeled according to the paper by Ange and Rafi
  */
-class SSBP : public Named
+class SSBP : public MemDepPredictor
 {
     public:
         /** Default constructor.  init() must be called prior to use. */
-        SSBP() : Named("SSBP") {};
+        SSBP() : MemDepPredictor("SSBP") {};
         /** Creates store set predictor with given table sizes. */
         SSBP(std::string_view name_, int numEntries_,
                 unsigned dep_check_shift_);
@@ -80,13 +81,34 @@ class SSBP : public Named
          */
         bool predictWait(Addr load_PC) const;
 
+        /** Decides whether this load should wait.  SSBP is a Kind B
+         *  predictor: it never names a store, so a wait comes back as
+         *  YoungestOlderStore and MemDepUnit resolves which store that is.
+         *  Stores are not predicted at all -- the counters are trained by
+         *  and for loads.
+         */
+        MemDepPrediction predict(Addr pc, bool is_load) override;
+
         /** Records a memory ordering violation: a load bypassed an older
          *  store to the same address and had to be squashed.  Type G of the
          *  paper's state machine.  C4 counts these events and saturates;
          *  C3 stays at zero until C4 has saturated, so a load must cause
          *  several violations before it is held back for any length of time.
+         *
+         *  store_PC is accepted to match the common predictor interface but
+         *  deliberately unused: Table II shows C3 and C4 are selected by the
+         *  load address alone.  PSFP is the half that needs the pair.
          */
-        void violation(Addr load_PC);
+        void violation(Addr store_PC, Addr load_PC) override;
+
+        /** The type G update itself, keyed on the load alone.  Kept
+         *  separate from the interface method above so that the state
+         *  machine stays drivable with no CPU and no store PC, which is
+         *  what the golden-vector unit tests need.  Do not make this an
+         *  overload of violation(): a one-argument overload alongside the
+         *  two-argument override binds wrongly through a base pointer.
+         */
+        void trainViolation(Addr load_PC);
 
         /** Trains the predictor when a load that was held back resolves.
          *  Covers types B and F: a load that overlapped an older store
@@ -98,7 +120,7 @@ class SSBP : public Named
         void loadResolved(Addr load_PC, bool aliased);
 
         /** Resets every entry, discarding all training. */
-        void clear();
+        void clear() override;
 
         /** Counter inspection.  Not used by the dependence unit; these exist
          *  for statistics, unit tests, and for sampling the distribution of
@@ -158,7 +180,7 @@ class SSBP : public Named
          *  back on a squash, which is the behaviour the transient execution
          *  attacks rely on.
          */
-        void squash(InstSeqNum squashed_num, ThreadID tid)
+        void squash(InstSeqNum squashed_num, ThreadID tid) override
         {}
 
         /** Notification that a memory op has issued.  StoreSet retires its
@@ -166,25 +188,28 @@ class SSBP : public Named
          *  is intentionally empty.
          */
         void
-        issued(Addr issued_PC, InstSeqNum issued_seq_num, bool is_store)
+        issued(Addr issued_PC, InstSeqNum issued_seq_num,
+               bool is_store) override
         {}
 
         /** Records that SSBP held this load back, and on which store.  The
          *  address fields stay empty until the store wakes it. */
-        void noteDelayedLoad(InstSeqNum sn, Addr load_PC, Addr store_PC);
+        void noteDelayedLoad(InstSeqNum sn, Addr load_PC,
+                             Addr store_PC) override;
 
         /** Records the address range of the store a delayed load was waiting
          *  on, captured at the moment that store wakes it. */
         void noteProducerAddr(InstSeqNum sn, Addr store_addr,
-                         unsigned store_size);
+                              unsigned store_size) override;
 
         /** A load has executed.  If SSBP parked it, decide whether it
         *  overlapped the store it waited on, apply the type B / F update,
         *  and drop the record. */
-        void loadExecuted(InstSeqNum sn, Addr load_addr, unsigned load_size);
+        void loadExecuted(InstSeqNum sn, Addr load_addr,
+                          unsigned load_size) override;
 
         /** Drops a record without training it, for squashed loads. */
-        void forgetDelayedLoad(InstSeqNum sn);
+        void forgetDelayedLoad(InstSeqNum sn) override;
 
         /** Decides whether an executed load overlapped the store it
         *  was made to wait on.  Comparison is done at LSQDepCheckShift
@@ -201,7 +226,7 @@ class SSBP : public Named
         bool overlaps(const DelayedLoad &rec, Addr load_addr,
                unsigned load_size) const;
 
-        bool drained() const { return delayedLoads.empty(); }
+        bool drained() const override { return delayedLoads.empty(); }
 
 
 };

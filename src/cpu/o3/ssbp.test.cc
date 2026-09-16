@@ -86,7 +86,7 @@ step(SSBP &ssbp, Addr pc, bool aliasing)
         }
 
         // It overlapped.  The machine squashes and trains type G.
-        ssbp.violation(pc);
+        ssbp.trainViolation(pc);
         return 'G';
     }
 
@@ -211,7 +211,7 @@ TEST(SSBP, C4SaturatesAndNeverResets)
     // violation() is driven directly: once C3 is non-zero the load waits,
     // so no further type G can arise through step().
     for (int i = 0; i < 10; ++i) {
-        ssbp.violation(PcA);
+        ssbp.trainViolation(PcA);
     }
 
     EXPECT_EQ(ssbp.getC4(PcA), 3);

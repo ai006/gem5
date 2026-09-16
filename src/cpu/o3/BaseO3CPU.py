@@ -53,6 +53,10 @@ from m5.proxy import *
 from m5.SimObject import *
 
 
+class MemDepPredictorType(ScopedEnum):
+    vals = ["StoreSet", "SSBP"]
+
+
 class BaseO3CPU(BaseCPU):
     type = "BaseO3CPU"
     cxx_class = "gem5::o3::CPU"
@@ -168,8 +172,13 @@ class BaseO3CPU(BaseCPU):
         ),
         "SSIT indexing policy",
     )
+    # Memory dependence predictor selection.  StoreSet is the default so
+    # that a stock configuration matches upstream gem5 exactly.
+    memDepPredictor = Param.MemDepPredictorType(
+        "StoreSet", "Memory dependence predictor to use"
+    )
+
     # SSBP
-    useSSBP = Param.Bool(True, "Parameter to toggle the SSBP on or off")
     SSBPNumEntries = Param.Unsigned(4096, "Number of SSBP entries")
 
     numRobs = Param.Unsigned(1, "Number of Reorder Buffers")
