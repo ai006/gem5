@@ -41,6 +41,7 @@
 #include "base/types.hh"
 #include "cpu/inst_seq.hh"
 #include "cpu/o3/mem_dep_pred.hh"
+#include "params/StoreSet.hh"
 
 class BaseIndexingPolicy;
 
@@ -89,23 +90,13 @@ class StoreSet : public MemDepPredictor
         SSID getSSID(void) const { return _ssid; }
     };
 
-    /** Default constructor.  init() must be called prior to use. */
-    StoreSet() : MemDepPredictor("StoreSets"), SSIT("SSIT") {};
+    typedef StoreSetParams Params;
 
-    /** Creates store set predictor with given table sizes. */
-    StoreSet(std::string_view name, uint64_t clear_period,
-             size_t SSIT_entries, int SSIT_assoc,
-             replacement_policy::Base *replPolicy,
-             BaseIndexingPolicy *indexingPolicy, int LFST_size);
+    /** Creates store set predictor with the configured table sizes. */
+    StoreSet(const Params &p);
 
     /** Default destructor. */
     ~StoreSet();
-
-    /** Initializes the store set predictor with the given table sizes. */
-    void init(uint64_t clear_period,
-              size_t SSIT_entries, int SSIT_assoc,
-              replacement_policy::Base *_replPolicy,
-              BaseIndexingPolicy *_indexingPolicy, int LFST_size);
 
     /** Looks up the producing store for this PC, if any.  Store sets is
      * a Kind A predictor, so it names the store it wants waited on.

@@ -45,35 +45,22 @@ SSBP::SSBPEntry::reset()
     setC4(0);
 }
 
-SSBP::SSBP(std::string_view name_, int numEntries_,
-           unsigned dep_check_shift_)
-    : MemDepPredictor(name_),
-      numEntries(numEntries_),
-      depCheckShift(dep_check_shift_)
+SSBP::SSBP(const Params &p)
+    : MemDepPredictor(p),
+      numEntries(p.numEntries),
+      depCheckShift(p.depCheckShift)
 {
     DPRINTF(SSBP, "SSBP: Creating SSBP object.\n");
     if (!isPowerOf2(numEntries)) {
         fatal("SSBP: number of entries must be a power of 2!\n");
     }
     ssbpEntries.resize(numEntries);
-
 }
 
 SSBP::~SSBP()
 {
 }
 
-void
-SSBP::init(int numEntries_, unsigned dep_check_shift)
-{
-    if (!isPowerOf2(numEntries_)) {
-        fatal("SSBP: number of entries must be a power of 2!\n");
-    }
-
-    numEntries = numEntries_;
-    depCheckShift = dep_check_shift;
-    ssbpEntries.resize(numEntries);
-}
 
 bool
 SSBP::predictWait(Addr load_PC) const

@@ -45,8 +45,8 @@ Import('*')
 if env['CONF']['BUILD_ISA']:
     SimObject('FUPool.py', sim_objects=['FUPool'])
     SimObject('FuncUnitConfig.py', sim_objects=[])
-    SimObject('BaseO3CPU.py', sim_objects=['BaseO3CPU'],
-        enums=['MemDepPredictorType'])
+    SimObject('BaseO3CPU.py',
+        sim_objects=['BaseO3CPU', 'MemDepPredictor', 'StoreSet', 'SSBP'])
     SimObject('IQUnit.py', sim_objects=['IQUnit'],
         enums=['IQInsertionPolicy'])
     SimObject('SMT.py',
@@ -104,4 +104,7 @@ if env['CONF']['BUILD_ISA']:
     SimObject('O3CPU.py', sim_objects=[], tags=['isa'])
     SimObject('O3Checker.py', sim_objects=[], tags=['isa'])
 
-    GTest('ssbp.test', 'ssbp.test.cc', 'ssbp.cc', with_tag('gem5 trace'))
+    # 'gem5 simobject' is required because SSBP derives from SimObject;
+    # it also brings in the trace machinery that ssbp.cc's DPRINTFs need.
+    GTest('ssbp.test', 'ssbp.test.cc', 'ssbp.cc',
+        with_tag('gem5 simobject'))

@@ -44,10 +44,8 @@
 #include "cpu/o3/dyn_inst_ptr.hh"
 #include "cpu/o3/inst_queue.hh"
 #include "cpu/o3/limits.hh"
-#include "cpu/o3/ssbp.hh"
-#include "cpu/o3/store_set.hh"
+#include "cpu/o3/mem_dep_pred.hh"
 #include "debug/MemDepUnit.hh"
-#include "enums/MemDepPredictorType.hh"
 #include "params/BaseO3CPU.hh"
 
 namespace gem5
@@ -61,32 +59,6 @@ int MemDepUnit::MemDepEntry::memdep_count = 0;
 int MemDepUnit::MemDepEntry::memdep_insert = 0;
 int MemDepUnit::MemDepEntry::memdep_erase = 0;
 #endif
-
-namespace
-{
-
-/** Builds the predictor named by the memDepPredictor parameter. */
-std::unique_ptr<MemDepPredictor>
-makeMemDepPredictor(const std::string &name, const BaseO3CPUParams &params)
-{
-    switch (params.memDepPredictor) {
-      case MemDepPredictorType::StoreSet:
-        return std::make_unique<StoreSet>(name + ".storesets",
-                params.store_set_clear_period, params.SSITSize,
-                params.SSITAssoc, params.SSITReplPolicy,
-                params.SSITIndexingPolicy, params.LFSTSize);
-
-      case MemDepPredictorType::SSBP:
-        return std::make_unique<SSBP>(name + ".ssbp",
-                params.SSBPNumEntries, params.LSQDepCheckShift);
-
-      default:
-        panic("Unknown memory dependence predictor type %i.\n",
-              (int)params.memDepPredictor);
-    }
-}
-
-} // anonymous namespace
 
 MemDepUnit::MemDepUnit() : iqPtr(NULL), stats(nullptr) {}
 
@@ -123,7 +95,7 @@ MemDepUnit::init(const BaseO3CPUParams &params, ThreadID tid, CPU *cpu)
 
     id = tid;
 
-    depPred = makeMemDepPredictor(_name, params);
+    depPred = params.memDepPredictor[tid];
 
     std::string stats_group_name = csprintf("MemDepUnit__%i", tid);
     cpu->addStatGroup(stats_group_name.c_str(), &stats);

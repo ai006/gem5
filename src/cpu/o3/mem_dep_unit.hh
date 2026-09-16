@@ -243,12 +243,13 @@ class MemDepUnit
     /** The memory dependence predictor.  It is accessed upon new
      *  instructions being added to the IQ, and responds by telling
      *  this unit what instruction the newly added instruction is dependent
-     *  upon.  Which predictor is built is chosen by the memDepPredictor
-     *  parameter; it is created in init() and owned per thread, because
-     *  the hardware being modelled partitions these tables amongst SMT
-     *  threads rather than sharing them.
+     *  upon.  Which predictor this is comes from the memDepPredictor
+     *  parameter, which holds one per thread: the hardware being modelled
+     *  partitions these tables amongst SMT threads rather than sharing
+     *  them.  The configuration's object graph owns it, so this is a
+     *  plain pointer and must not be deleted here.
      */
-    std::unique_ptr<MemDepPredictor> depPred;
+    MemDepPredictor *depPred = nullptr;
 
     /** Sequence numbers of outstanding load barriers. */
     std::unordered_set<InstSeqNum> loadBarrierSNs;

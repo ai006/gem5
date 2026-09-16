@@ -29,11 +29,10 @@
 #ifndef __CPU_O3_MEM_DEP_PRED_HH__
 #define __CPU_O3_MEM_DEP_PRED_HH__
 
-#include <string_view>
-
-#include "base/named.hh"
 #include "base/types.hh"
 #include "cpu/inst_seq.hh"
+#include "params/MemDepPredictor.hh"
+#include "sim/sim_object.hh"
 
 namespace gem5
 {
@@ -72,19 +71,22 @@ struct MemDepPrediction
 /**
  * Interface every memory dependence predictor implements.
  *
- * Held by MemDepUnit through a unique_ptr, one instance per hardware
- * thread.  Per-thread duplication is deliberate: the AMD predictors this
- * models are partitioned amongst SMT threads, so sharing one instance
- * across threads would be wrong rather than merely different.
+ * One instance per hardware thread, created by the configuration and
+ * handed to that thread's MemDepUnit.  Per-thread duplication is
+ * deliberate: the AMD predictors this models are partitioned amongst SMT
+ * threads, so sharing one instance across threads would be wrong rather
+ * than merely different.
  *
  * Methods that only some predictors need have empty defaults rather than
  * being pure virtual, so MemDepUnit can call them unconditionally instead
  * of branching on which predictor is configured.
  */
-class MemDepPredictor : public Named
+class MemDepPredictor : public SimObject
 {
   public:
-    MemDepPredictor(std::string_view name) : Named(name) {}
+    typedef MemDepPredictorParams Params;
+
+    MemDepPredictor(const Params &p) : SimObject(p) {}
 
     virtual ~MemDepPredictor() = default;
 
