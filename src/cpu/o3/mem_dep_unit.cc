@@ -44,7 +44,10 @@
 #include "cpu/o3/dyn_inst_ptr.hh"
 #include "cpu/o3/inst_queue.hh"
 #include "cpu/o3/limits.hh"
+#include "cpu/o3/ssbp.hh"
+#include "cpu/o3/store_set.hh"
 #include "debug/MemDepUnit.hh"
+#include "enums/MemDepPredictorType.hh"
 #include "params/BaseO3CPU.hh"
 
 namespace gem5
@@ -59,20 +62,33 @@ int MemDepUnit::MemDepEntry::memdep_insert = 0;
 int MemDepUnit::MemDepEntry::memdep_erase = 0;
 #endif
 
-MemDepUnit::MemDepUnit() : iqPtr(NULL), stats(nullptr) {}
-
-MemDepUnit::MemDepUnit(const BaseO3CPUParams &params)
-    : _name(params.name + ".memdepunit"),
-      depPred(_name + ".storesets", params.store_set_clear_period,
-              params.SSITSize, params.SSITAssoc, params.SSITReplPolicy,
-              params.SSITIndexingPolicy, params.LFSTSize),
-      ssbp(_name + ".ssbps", params.SSBPNumEntries, params.LSQDepCheckShift),
-      useSSBP(params.useSSBP),
-      iqPtr(NULL),
-      stats(nullptr)
+namespace
 {
-    DPRINTF(MemDepUnit, "Creating MemDepUnit object.\n");
+
+/** Builds the predictor named by the memDepPredictor parameter. */
+std::unique_ptr<MemDepPredictor>
+makeMemDepPredictor(const std::string &name, const BaseO3CPUParams &params)
+{
+    switch (params.memDepPredictor) {
+      case MemDepPredictorType::StoreSet:
+        return std::make_unique<StoreSet>(name + ".storesets",
+                params.store_set_clear_period, params.SSITSize,
+                params.SSITAssoc, params.SSITReplPolicy,
+                params.SSITIndexingPolicy, params.LFSTSize);
+
+      case MemDepPredictorType::SSBP:
+        return std::make_unique<SSBP>(name + ".ssbp",
+                params.SSBPNumEntries, params.LSQDepCheckShift);
+
+      default:
+        panic("Unknown memory dependence predictor type %i.\n",
+              (int)params.memDepPredictor);
+    }
 }
+
+} // anonymous namespace
+
+MemDepUnit::MemDepUnit() : iqPtr(NULL), stats(nullptr) {}
 
 MemDepUnit::~MemDepUnit()
 {
@@ -107,18 +123,10 @@ MemDepUnit::init(const BaseO3CPUParams &params, ThreadID tid, CPU *cpu)
 
     id = tid;
 
-    depPred.init(params.store_set_clear_period,
-                 params.SSITSize, params.SSITAssoc, params.SSITReplPolicy,
-                 params.SSITIndexingPolicy, params.LFSTSize);
+    depPred = makeMemDepPredictor(_name, params);
 
     std::string stats_group_name = csprintf("MemDepUnit__%i", tid);
     cpu->addStatGroup(stats_group_name.c_str(), &stats);
-
-    //SSBP
-    useSSBP = params.useSSBP;
-    if(useSSBP) {
-        ssbp.init(params.SSBPNumEntries, params.LSQDepCheckShift);
-    }
 }
 
 MemDepUnit::MemDepUnitStats::MemDepUnitStats(statistics::Group *parent)
@@ -131,8 +139,9 @@ MemDepUnit::MemDepUnitStats::MemDepUnitStats(statistics::Group *parent)
                "Number of conflicting loads."),
       ADD_STAT(conflictingStores, statistics::units::Count::get(),
                "Number of conflicting stores."),
-      ADD_STAT(ssbpWaitNoProducer, statistics::units::Count::get(),
-               "Number times ssbp predicted wait sans producer.")
+      ADD_STAT(predictedWaitNoProducer, statistics::units::Count::get(),
+               "Number of times the predictor asked for a wait but no "
+               "older store was in flight to wait on.")
 {
 }
 
@@ -142,7 +151,7 @@ MemDepUnit::isDrained() const
     bool drained = instsToReplay.empty()
                  && memDepHash.empty()
                  && instsToReplay.empty()
-                 && (!useSSBP || ssbp.drained());
+                 && depPred->drained();
     for (int i = 0; i < MaxThreads; ++i)
         drained = drained && instList[i].empty();
 
@@ -154,7 +163,7 @@ MemDepUnit::drainSanityCheck() const
 {
     assert(instsToReplay.empty());
     assert(memDepHash.empty());
-    assert(!useSSBP || ssbp.drained());
+    assert(depPred->drained());
     for (int i = 0; i < MaxThreads; ++i)
         assert(instList[i].empty());
     assert(instsToReplay.empty());
@@ -167,10 +176,7 @@ MemDepUnit::takeOverFrom()
     // Be sure to reset all state.
     loadBarrierSNs.clear();
     storeBarrierSNs.clear();
-    depPred.clear();
-    //SSBP
-    if(useSSBP)
-        ssbp.clear();
+    depPred->clear();
 }
 
 void
@@ -232,8 +238,9 @@ MemDepUnit::insert(const DynInstPtr &inst)
     // Check any barriers and the dependence predictor for any
     // producing memrefs/stores.
     std::vector<InstSeqNum>  producing_stores;
-    //ssbp
-    bool ssbp_predicted_wait = false;
+    /** Set when a Kind B predictor asked for a wait and a store was
+     *  actually found to wait on. */
+    bool predicted_wait = false;
 
     if ((inst->isLoad() || inst->isAtomic()) && hasLoadBarrier()) {
         DPRINTF(MemDepUnit, "%d load barriers in flight\n",
@@ -248,28 +255,32 @@ MemDepUnit::insert(const DynInstPtr &inst)
                                 std::begin(storeBarrierSNs),
                                 std::end(storeBarrierSNs));
     } else {
-        //SSBP
         InstSeqNum dep = 0;
-        if (useSSBP) {
-            // SSBP names no store; it answers only "should this load
-            // wait?" To translate that into a dependence we need to
-            // find the youngest older store still in flight.
-            if (inst->isLoad() &&
-                    ssbp.predictWait(inst->pcState().instAddr())) {
+        MemDepPrediction pred =
+            depPred->predict(inst->pcState().instAddr(), inst->isLoad());
 
-                dep = findYoungestOlderStore(inst);
+        switch (pred.kind) {
+          case MemDepPrediction::NoDependence:
+            break;
 
-                if (dep != 0) {
-                    ssbp_predicted_wait = true;
-                } else {
-                    // Predicted wait, but nothing older to wait on.
-                    ++stats.ssbpWaitNoProducer;
-                }
+          case MemDepPrediction::NamedStore:
+            dep = pred.producer;
+            break;
+
+          case MemDepPrediction::YoungestOlderStore:
+            // A Kind B predictor said wait but named no store, so find
+            // the youngest older store still in flight to wait on.
+            dep = findYoungestOlderStore(inst);
+
+            if (dep != 0) {
+                predicted_wait = true;
+            } else {
+                // Predicted wait, but nothing older to wait on.
+                ++stats.predictedWaitNoProducer;
             }
+            break;
         }
-         else {
-            dep = depPred.checkInst(inst->pcState().instAddr());
-        }
+
         if (dep != 0)
             producing_stores.push_back(dep);
     }
@@ -324,10 +335,10 @@ MemDepUnit::insert(const DynInstPtr &inst)
         if (inst->isLoad()) {
             ++stats.conflictingLoads;
 
-            if (ssbp_predicted_wait) {
+            if (predicted_wait) {
 
                 assert(store_entries.size() == 1);
-                ssbp.noteDelayedLoad(
+                depPred->noteDelayedLoad(
                     inst->seqNum,
                     inst->pcState().instAddr(),
                     store_entries.front()->inst->pcState().instAddr());
@@ -344,7 +355,7 @@ MemDepUnit::insert(const DynInstPtr &inst)
         DPRINTF(MemDepUnit, "Inserting store/atomic PC %s [sn:%lli].\n",
                 inst->pcState(), inst->seqNum);
 
-        depPred.insertStore(inst->pcState().instAddr(), inst->seqNum,
+        depPred->insertStore(inst->pcState().instAddr(), inst->seqNum,
                 inst->threadNumber);
         ++stats.insertedStores;
     } else if (inst->isLoad()) {
@@ -365,7 +376,7 @@ MemDepUnit::insertNonSpec(const DynInstPtr &inst)
         DPRINTF(MemDepUnit, "Inserting store/atomic PC %s [sn:%lli].\n",
                 inst->pcState(), inst->seqNum);
 
-        depPred.insertStore(inst->pcState().instAddr(), inst->seqNum,
+        depPred->insertStore(inst->pcState().instAddr(), inst->seqNum,
                 inst->threadNumber);
 
         ++stats.insertedStores;
@@ -486,8 +497,8 @@ MemDepUnit::completeInst(const DynInstPtr &inst)
 {
     wakeDependents(inst);
     //ssbp
-    if (useSSBP && inst->isLoad() && inst->effAddrValid())
-        ssbp.loadExecuted(inst->seqNum, inst->effAddr, inst->effSize);
+    if (inst->isLoad() && inst->effAddrValid())
+        depPred->loadExecuted(inst->seqNum, inst->effAddr, inst->effSize);
     completed(inst);
     InstSeqNum barr_sn = inst->seqNum;
 
@@ -517,8 +528,7 @@ MemDepUnit::completeInst(const DynInstPtr &inst)
     // SSBP: backstop.  A trained load already erased its own record
     // above; this catches the ones loadExecuted skipped because their
     // effective address was never valid, so the map cannot leak.
-    if (useSSBP)
-        ssbp.forgetDelayedLoad(inst->seqNum);
+    depPred->forgetDelayedLoad(inst->seqNum);
 }
 
 void
@@ -542,8 +552,8 @@ MemDepUnit::wakeDependents(const DynInstPtr &inst)
 
         // The store has executed, so its address is known; the woken load
         // has not run yet.  This is the only moment both are in hand.
-        if (useSSBP && inst->effAddrValid()) {
-            ssbp.noteProducerAddr(woken_inst->inst->seqNum,
+        if (inst->effAddrValid()) {
+            depPred->noteProducerAddr(woken_inst->inst->seqNum,
                                 inst->effAddr, inst->effSize);
         }
 
@@ -630,8 +640,7 @@ MemDepUnit::squash(const InstSeqNum &squashed_num, ThreadID tid)
 
         memDepHash.erase(hash_it);
         //SSBP
-        if (useSSBP)
-            ssbp.forgetDelayedLoad((*squash_it)->seqNum);
+        depPred->forgetDelayedLoad((*squash_it)->seqNum);
 #ifdef GEM5_DEBUG
         MemDepEntry::memdep_erase++;
 #endif
@@ -640,11 +649,7 @@ MemDepUnit::squash(const InstSeqNum &squashed_num, ThreadID tid)
     }
 
     // Tell the dependency predictor to squash as well.
-    depPred.squash(squashed_num, tid);
-    if (useSSBP) {
-        //SSBP
-        ssbp.squash(squashed_num, tid);
-    }
+    depPred->squash(squashed_num, tid);
 }
 
 void
@@ -655,12 +660,8 @@ MemDepUnit::violation(const DynInstPtr &store_inst,
             " load: %#x, store: %#x\n", violating_load->pcState().instAddr(),
             store_inst->pcState().instAddr());
     // Tell the memory dependence unit of the violation.
-    depPred.violation(store_inst->pcState().instAddr(),
+    depPred->violation(store_inst->pcState().instAddr(),
             violating_load->pcState().instAddr());
-    if(useSSBP){
-        //SSBP
-        ssbp.violation(violating_load->pcState().instAddr());
-    }
 
 }
 
@@ -670,7 +671,8 @@ MemDepUnit::issue(const DynInstPtr &inst)
     DPRINTF(MemDepUnit, "Issuing instruction PC %#x [sn:%lli].\n",
             inst->pcState().instAddr(), inst->seqNum);
 
-    depPred.issued(inst->pcState().instAddr(), inst->seqNum, inst->isStore());
+    depPred->issued(inst->pcState().instAddr(), inst->seqNum,
+                    inst->isStore());
 }
 
 MemDepUnit::MemDepEntryPtr &

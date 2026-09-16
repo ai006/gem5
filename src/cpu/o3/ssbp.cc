@@ -47,7 +47,7 @@ SSBP::SSBPEntry::reset()
 
 SSBP::SSBP(std::string_view name_, int numEntries_,
            unsigned dep_check_shift_)
-    : Named(name_),
+    : MemDepPredictor(name_),
       numEntries(numEntries_),
       depCheckShift(dep_check_shift_)
 {
@@ -82,8 +82,28 @@ SSBP::predictWait(Addr load_PC) const
     return (entry.getC3() > 0);
 }
 
+MemDepPrediction
+SSBP::predict(Addr pc, bool is_load)
+{
+    // Kind B, and load side only.  Stores are never held back by SSBP;
+    // the counters are trained by and for loads.
+    if (!is_load || !predictWait(pc))
+        return {};
+
+    // SSBP names no store, so MemDepUnit has to resolve which one.
+    return {MemDepPrediction::YoungestOlderStore, 0};
+}
+
 void
-SSBP::violation(Addr load_PC)
+SSBP::violation(Addr store_PC, Addr load_PC)
+{
+    // store_PC is deliberately ignored: Table II shows C3 and C4 are
+    // selected by the load address alone.
+    trainViolation(load_PC);
+}
+
+void
+SSBP::trainViolation(Addr load_PC)
 {
     SSBPEntry &entry = ssbpEntries[getIndex(load_PC)];
 

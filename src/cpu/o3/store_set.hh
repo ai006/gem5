@@ -40,6 +40,7 @@
 #include "base/named.hh"
 #include "base/types.hh"
 #include "cpu/inst_seq.hh"
+#include "cpu/o3/mem_dep_pred.hh"
 
 class BaseIndexingPolicy;
 
@@ -70,7 +71,7 @@ struct ltseqnum
  * stands for Store Set ID, SSIT stands for Store Set ID Table, and
  * LFST is Last Fetched Store Table.
  */
-class StoreSet : public Named
+class StoreSet : public MemDepPredictor
 {
   public:
     typedef Addr SSID;
@@ -89,7 +90,7 @@ class StoreSet : public Named
     };
 
     /** Default constructor.  init() must be called prior to use. */
-    StoreSet() : Named("StoreSets"), SSIT("SSIT") {};
+    StoreSet() : MemDepPredictor("StoreSets"), SSIT("SSIT") {};
 
     /** Creates store set predictor with given table sizes. */
     StoreSet(std::string_view name, uint64_t clear_period,
@@ -106,9 +107,14 @@ class StoreSet : public Named
               replacement_policy::Base *_replPolicy,
               BaseIndexingPolicy *_indexingPolicy, int LFST_size);
 
+    /** Looks up the producing store for this PC, if any.  Store sets is
+     * a Kind A predictor, so it names the store it wants waited on.
+     */
+    MemDepPrediction predict(Addr pc, bool is_load) override;
+
     /** Records a memory ordering violation between the younger load
      * and the older store. */
-    void violation(Addr store_PC, Addr load_PC);
+    void violation(Addr store_PC, Addr load_PC) override;
 
     /** Clears the store set predictor every so often so that all the
      * entries aren't used and stores are constantly predicted as
@@ -123,7 +129,8 @@ class StoreSet : public Named
 
     /** Inserts a store into the store set predictor.  Updates the
      * LFST if the store has a valid SSID. */
-    void insertStore(Addr store_PC, InstSeqNum store_seq_num, ThreadID tid);
+    void insertStore(Addr store_PC, InstSeqNum store_seq_num,
+                     ThreadID tid) override;
 
     /** Checks if the instruction with the given PC is dependent upon
      * any store.  @return Returns the sequence number of the store
@@ -132,13 +139,14 @@ class StoreSet : public Named
     InstSeqNum checkInst(Addr PC);
 
     /** Records this PC/sequence number as issued. */
-    void issued(Addr issued_PC, InstSeqNum issued_seq_num, bool is_store);
+    void issued(Addr issued_PC, InstSeqNum issued_seq_num,
+                bool is_store) override;
 
     /** Squashes for a specific thread until the given sequence number. */
-    void squash(InstSeqNum squashed_num, ThreadID tid);
+    void squash(InstSeqNum squashed_num, ThreadID tid) override;
 
     /** Resets all tables. */
-    void clear();
+    void clear() override;
 
     /** Debug function to dump the contents of the store list. */
     void dump();
