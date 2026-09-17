@@ -152,12 +152,26 @@ class SSBP : public MemDepPredictor
 
         };
         std::vector<SSBPEntry> ssbpEntries;
-        /** Counter limits and update magnitudes (Table I, Table IV)
-         *  of paper. */
-        static constexpr uint8_t C3Max = 32;
-        static constexpr uint8_t C4Max = 3;
-        static constexpr uint8_t C3Violation = 15;
-        static constexpr uint8_t C3Increment = 16;
+
+        /** Counter limits and update magnitudes, defaulting to the values
+         *  the paper measured (Table I, Table IV).  Parameters rather than
+         *  constants so each can be swept from the configuration.
+         */
+        uint8_t C3Max = 32;
+        uint8_t C4Max = 3;
+        uint8_t C3Violation = 15;
+        uint8_t C3Increment = 16;
+
+        /** Whether C4 is forgiven when C3 decays back to zero.  The paper
+         *  never observed C4 reset, which is what makes three violations
+         *  permanently sticky, so this is off by default.
+         */
+        bool c4ForgivenOnC3Zero = false;
+
+        /** Speculative Store Bypass Disable.  Pins every entry to [Block]
+         *  so no load is allowed to bypass an unresolved store.
+         */
+        bool ssbd = false;
 
         struct DelayedLoad
         {
