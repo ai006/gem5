@@ -72,15 +72,23 @@ constexpr unsigned DepCheckShift = 4;
  * because SimObject's constructor reads it.
  */
 SSBPParams
-testParams(unsigned entries = NumEntries,
-           unsigned shift = DepCheckShift)
+testParams()
 {
     SSBPParams p;
 
     p.name = "ssbp.test";
     p.eventq_index = 0;
-    p.numEntries = entries;
-    p.depCheckShift = shift;
+    p.numEntries = NumEntries;
+    p.depCheckShift = DepCheckShift;
+
+    // The values the paper measured, so an unmodified params struct
+    // reproduces the golden vectors.
+    p.c3Max = 32;
+    p.c4Max = 3;
+    p.c3Increment = 16;
+    p.c3ViolationSet = 15;
+    p.c4ForgivenOnC3Zero = false;
+    p.ssbd = false;
 
     return p;
 }
@@ -301,7 +309,7 @@ TEST(SSBP, CollidingPcsShareAnEntry)
     EXPECT_EQ(run(ssbp, PcCollidesWithA, "a"), "B");
 }
 
-/** clear() discards training, including the sticky C4. */
+/** clear() is a full wipe of the table, so it discards both counters. */
 TEST(SSBP, ClearDiscardsTraining)
 {
     SSBP ssbp(testParams());
@@ -313,4 +321,96 @@ TEST(SSBP, ClearDiscardsTraining)
 
     EXPECT_EQ(ssbp.getC3(PcA), 0);
     EXPECT_EQ(ssbp.getC4(PcA), 0);
+}
+
+/**
+ * By default C4 is never forgiven, so a PC that has already earned a
+ * saturated C4 is re-armed by one later alias rather than three.  This
+ * stickiness is the property the paper measured.
+ */
+TEST(SSBP, C4IsStickyByDefault)
+{
+    SSBP ssbp(testParams());
+
+    // Arm it, then decay C3 all the way back to zero.
+    EXPECT_EQ(run(ssbp, PcA, "aaa" + std::string(15, 'n')),
+              "GGG" + std::string(15, 'F'));
+
+    EXPECT_EQ(ssbp.getC3(PcA), 0);
+    EXPECT_EQ(ssbp.getC4(PcA), 3);
+
+    // One alias, not three, puts it straight back.
+    EXPECT_EQ(run(ssbp, PcA, "a"), "G");
+    EXPECT_EQ(ssbp.getC3(PcA), 15);
+}
+
+/**
+ * With c4ForgivenOnC3Zero the violation history is dropped as soon as C3
+ * decays all the way back, so the PC must earn its three violations
+ * again.  Deliberately not what the silicon does; it exists to measure
+ * what the stickiness costs.
+ */
+TEST(SSBP, C4IsForgivenWhenC3DecaysIfEnabled)
+{
+    SSBPParams p = testParams();
+    p.c4ForgivenOnC3Zero = true;
+    SSBP ssbp(p);
+
+    // Arm it, then decay C3 all the way back to zero.
+    EXPECT_EQ(run(ssbp, PcA, "aaa" + std::string(15, 'n')),
+              "GGG" + std::string(15, 'F'));
+
+    EXPECT_EQ(ssbp.getC3(PcA), 0);
+    EXPECT_EQ(ssbp.getC4(PcA), 0);
+
+    // Under the default policy the next alias would emit G and set C3
+    // straight back to 15; here it starts over.
+    EXPECT_EQ(run(ssbp, PcA, "a"), "G");
+    EXPECT_EQ(ssbp.getC4(PcA), 1);
+    EXPECT_EQ(ssbp.getC3(PcA), 0);
+}
+
+/**
+ * SSBD pins every entry to [Block]: every load waits, whatever the
+ * counters say (section VI-A).  Training still happens underneath, so
+ * clearing the flag would restore normal behaviour.
+ */
+TEST(SSBP, SsbdForcesEveryLoadToWait)
+{
+    SSBPParams p = testParams();
+    p.ssbd = true;
+    SSBP ssbp(p);
+
+    // An untrained entry would normally bypass, emitting H or G.
+    ASSERT_EQ(ssbp.getC3(PcA), 0);
+
+    // Instead every load waits, so only types B and F can occur.
+    EXPECT_EQ(run(ssbp, PcA, "nnn"), "FFF");
+    EXPECT_EQ(run(ssbp, PcB, "a"), "B");
+
+    // No violation was ever reported, so C4 stayed put.
+    EXPECT_EQ(ssbp.getC4(PcA), 0);
+}
+
+/** The counter magnitudes are parameters, so a sweep can move them. */
+TEST(SSBP, CounterMagnitudesAreConfigurable)
+{
+    SSBPParams p = testParams();
+    p.c3Increment = 4;
+    p.c3ViolationSet = 2;
+    p.c4Max = 1;
+    SSBP ssbp(p);
+
+    // c4Max of 1 means a single violation arms the predictor, and it
+    // arms to c3ViolationSet rather than 15.
+    EXPECT_EQ(run(ssbp, PcA, "a"), "G");
+    EXPECT_EQ(ssbp.getC4(PcA), 1);
+    EXPECT_EQ(ssbp.getC3(PcA), 2);
+
+    // Two decay steps, then it bypasses again.
+    EXPECT_EQ(run(ssbp, PcA, "nnn"), "FFH");
+
+    // And type B now adds 4 rather than 16.
+    run(ssbp, PcA, "a");
+    EXPECT_EQ(ssbp.getC3(PcA), 2);
 }

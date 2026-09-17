@@ -108,6 +108,11 @@ class SSBP(MemDepPredictor):
     Reverse engineered in "Uncovering and Exploiting AMD Speculative
     Memory Access Predictors for Fun and Profit", HPCA 2024.  Modelled
     with PSFP absent, so the prediction rule reduces to C3 > 0.
+
+    The counter limits below default to the values the paper measured
+    (Table I, Table IV).  They are parameters rather than constants so
+    that the sensitivity of the model to each one can be swept from the
+    configuration, without a rebuild.
     """
 
     type = "SSBP"
@@ -120,6 +125,34 @@ class SSBP(MemDepPredictor):
         "Number of places to shift addr before the alias check.  Taken "
         "from the CPU so that this predictor and LSQUnit::checkViolations "
         "agree on what counts as aliasing",
+    )
+
+    c3Max = Param.Unsigned(
+        32, "Saturation point of C3, the aliasing counter.  6 bits wide"
+    )
+    c4Max = Param.Unsigned(
+        3, "Saturation point of C4, the violation counter.  2 bits wide"
+    )
+    c3Increment = Param.Unsigned(
+        16, "Added to C3 on a type B event, a wait that proved justified"
+    )
+    c3ViolationSet = Param.Unsigned(
+        15,
+        "Value C3 is set to by a type G event, once C4 has saturated.  "
+        "Below that it is set to zero instead, which is why a load must "
+        "cause several violations before it is held back at all",
+    )
+    c4ForgivenOnC3Zero = Param.Bool(
+        False,
+        "Reset the violation counter C4 when C3 decays back to zero, so a "
+        "PC must earn its violations again.  False is faithful: Table I "
+        "never shows C4 resetting",
+    )
+    ssbd = Param.Bool(
+        False,
+        "Model Speculative Store Bypass Disable: pin every entry to "
+        "[Block] so the predictor always reports aliasing and no load is "
+        "allowed to bypass an unresolved store",
     )
 
 
