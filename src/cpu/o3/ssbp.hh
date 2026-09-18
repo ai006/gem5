@@ -128,9 +128,30 @@ class SSBP : public MemDepPredictor
         uint8_t getC4(Addr load_PC) const;
 
     private:
-        inline unsigned getIndex(Addr load_PC) const
-        { return load_PC & (numEntries - 1); }
+        /** Turns a load address into a table index, using the
+         *  reverse-engineered AMD hash (SS III-C-2, IV-B-1): the address
+         *  is folded on itself in index-sized chunks and XORed, so bits
+         *  from across the whole address decide the entry rather than
+         *  only the lowest ones.  At the default 4096 entries the chunk
+         *  width is 12 and this is exactly the paper's
+         *  h_i = A_i ^ A_{i+12} ^ A_{i+24} ^ A_{i+36}.
+         *
+         *  Which loads collide is the whole point: two loads sharing an
+         *  entry train each other's counters, which is what lets one
+         *  address space train another's predictor.
+         */
+        unsigned getIndex(Addr load_PC) const;
 
+        /** Width of one fold chunk, log2(numEntries).  12 at the default
+         *  table size, which is what makes the fold paper-exact there and
+         *  lets a smaller table generalise instead of truncating. */
+        unsigned indexBits = 0;
+
+        /** Widest address the fold covers.  x86-64 virtual addresses are
+         *  48 bits and physical addresses no wider, so folding past this
+         *  would only mix in zeroes.  At indexBits 12 it gives exactly
+         *  the paper's four terms over bits 0..47. */
+        static constexpr unsigned AddrBits = 48;
 
     private:
         int numEntries = 0;
@@ -173,6 +194,10 @@ class SSBP : public MemDepPredictor
          */
         bool ssbd = false;
 
+        /** Index by the instruction's physical address.  See
+         *  wantsPhysicalIndex(). */
+        bool useIPA = false;
+
         struct DelayedLoad
         {
             Addr loadPC = 0;
@@ -182,6 +207,8 @@ class SSBP : public MemDepPredictor
         };
 
         std::unordered_map<InstSeqNum, DelayedLoad> delayedLoads;
+
+
 
     //The functions listed here are for making the SSBP predictor
     //work with the current
@@ -217,8 +244,8 @@ class SSBP : public MemDepPredictor
         /** A load has executed.  If SSBP parked it, decide whether it
         *  overlapped the store it waited on, apply the type B / F update,
         *  and drop the record. */
-        void loadExecuted(InstSeqNum sn, Addr load_addr,
-                          unsigned load_size) override;
+        MemDepTraining loadExecuted(InstSeqNum sn, Addr load_addr,
+                                    unsigned load_size) override;
 
         /** Drops a record without training it, for squashed loads. */
         void forgetDelayedLoad(InstSeqNum sn) override;
@@ -240,7 +267,10 @@ class SSBP : public MemDepPredictor
 
         bool drained() const override { return delayedLoads.empty(); }
 
-
+        /** SSBP is selected by the load's physical address on real
+         *  hardware, which is why it leaks across processes.  Off by
+         *  default until the fold hash flips with it. */
+        bool wantsPhysicalIndex() const override { return useIPA; }
 };
 
 

@@ -148,6 +148,14 @@ class SSBP(MemDepPredictor):
         "PC must earn its violations again.  False is faithful: Table I "
         "never shows C4 resetting",
     )
+    useIPA = Param.Bool(
+        True,
+        "Index the table by the load instruction's physical address "
+        "rather than its virtual one, which is what the hardware does "
+        "(SS III-C-1) and why the predictor leaks across processes.  "
+        "The index hash folds the whole address, so it is only "
+        "meaningful over a physical one -- the two go together",
+    )
     ssbd = Param.Bool(
         False,
         "Model Speculative Store Bypass Disable: pin every entry to "

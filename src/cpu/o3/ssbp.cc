@@ -54,7 +54,8 @@ SSBP::SSBP(const Params &p)
       C3Violation(p.c3ViolationSet),
       C3Increment(p.c3Increment),
       c4ForgivenOnC3Zero(p.c4ForgivenOnC3Zero),
-      ssbd(p.ssbd)
+      ssbd(p.ssbd),
+      useIPA(p.useIPA)
 {
     DPRINTF(SSBP, "SSBP: Creating SSBP object.\n");
 
@@ -82,12 +83,30 @@ SSBP::SSBP(const Params &p)
         DPRINTF(SSBP, "SSBP: SSBD set; every load will be held back.\n");
     }
 
+    indexBits = floorLog2(numEntries);
+
     ssbpEntries.resize(numEntries);
+}
+
+unsigned
+SSBP::getIndex(Addr load_PC) const
+{
+    // Fold the address onto itself in index-sized chunks.  Bit i of the
+    // result is A_i ^ A_{i+indexBits} ^ A_{i+2*indexBits} ^ ...  XOR is
+    // bitwise, so folding whole chunks is the same as doing it per bit,
+    // and far less code.
+    Addr folded = load_PC;
+
+    for (unsigned shift = indexBits; shift < AddrBits; shift += indexBits)
+        folded ^= load_PC >> shift;
+
+    return folded & (numEntries - 1);
 }
 
 SSBP::~SSBP()
 {
 }
+
 
 
 bool
@@ -107,8 +126,12 @@ MemDepPrediction
 SSBP::predict(Addr pc, bool is_load)
 {
     // Kind B, and load side only.  Stores are never held back by SSBP;
-    // the counters are trained by and for loads.
-    if (!is_load || !predictWait(pc))
+    // the counters are trained by and for loads, so they are counted in
+    // neither predictedWait nor predictedGo.
+    if (!is_load)
+        return {};
+
+    if (!predictWait(pc))
         return {};
 
     // SSBP names no store, so MemDepUnit has to resolve which one.
@@ -225,7 +248,7 @@ SSBP::noteProducerAddr(InstSeqNum sn, Addr store_addr,
 /** A load has executed.  If SSBP parked it, decide whether it
 *  overlapped the store it waited on, apply the type B / F update,
 *  and drop the record. */
-void
+MemDepTraining
 SSBP::loadExecuted(InstSeqNum sn, Addr load_addr, unsigned load_size)
 {
     auto it = delayedLoads.find(sn);
@@ -233,7 +256,7 @@ SSBP::loadExecuted(InstSeqNum sn, Addr load_addr, unsigned load_size)
     // SSBP never parked this load, so no prediction was exercised and
     // the FSM should see no input at all.
     if (it == delayedLoads.end())
-        return;
+        return MemDepTraining::None;
 
     const DelayedLoad &rec = it->second;
     bool aliased = overlaps(rec, load_addr, load_size);
@@ -243,6 +266,8 @@ SSBP::loadExecuted(InstSeqNum sn, Addr load_addr, unsigned load_size)
     // Dropping the record here is what stops a load that re-executes
     // from training twice.
     delayedLoads.erase(it);
+
+    return aliased ? MemDepTraining::Confirmed : MemDepTraining::Needless;
 }
 
 /** Drops a record without training it, for squashed loads. */

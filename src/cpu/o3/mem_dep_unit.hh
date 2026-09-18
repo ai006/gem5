@@ -166,6 +166,28 @@ class MemDepUnit
     InstSeqNum findYoungestOlderStore(const DynInstPtr &inst);
 
   private:
+    /**
+     * The address the predictor is indexed by.
+     *
+     * The virtual PC normally, or the instruction's *physical* address
+     * when the predictor asks for one -- which is what AMD's predictor
+     * actually uses, and why it leaks across address spaces.
+     *
+     * This must be the only place pcState().instAddr() is read on the
+     * prediction and training paths.  If prediction indexed by one and
+     * training by the other, the state machine would train a different
+     * entry than it predicted from, silently, and it would look like a
+     * badly performing predictor rather than a bug.
+     *
+     * Falls back to the virtual address if translation fails, and counts
+     * that -- a silent fallback would make the physical path look like
+     * it was working while doing nothing.
+     */
+    Addr predictorIndexAddr(const DynInstPtr &inst);
+
+  public:
+
+  private:
 
     /** Completes a memory instruction. */
     void completed(const DynInstPtr &inst);
@@ -287,6 +309,49 @@ class MemDepUnit
         /** Stat for number of times the predictor asked for a wait
          *  but no older store was in flight to wait on. */
         statistics::Scalar predictedWaitNoProducer;
+        /** Stat for number of loads that were never shown to the
+         *  predictor because a matching barrier was in flight.  The
+         *  producer-selection logic is an if / else if / else chain, so
+         *  barriers take an earlier arm and the predictor is skipped. */
+        statistics::Scalar barrierSkippedPredictions;
+
+        /** Stat for loads that bypassed the predictor because they were
+         *  inserted non-speculatively.  insertNonSpec() routes through
+         *  insertBarrier() and never predicts at all, so without this
+         *  counter these loads are simply missing from the wait/go
+         *  totals. */
+        statistics::Scalar nonSpecSkippedPredictions;
+
+        /** Loads the predictor held back, and loads it let bypass.
+         *  Counted for loads only, so the two plus barrierSkipped
+         *  reconcile against insertedLoads. */
+        statistics::Scalar predictedWaitLoads;
+        statistics::Scalar predictedGoLoads;
+
+        /** Type B of the paper's taxonomy: a held-back load that did
+         *  overlap the store it waited for, so the wait was justified.
+         *  Only a predictor that trains on the outcome of its own waits
+         *  reports these, so they are nozero and simply do not appear
+         *  under store sets. */
+        statistics::Scalar confirmedWaits;
+
+        /** Type F: a held-back load that overlapped nothing, so the
+         *  stall bought nothing.  The cost side of the predictor. */
+        statistics::Scalar needlessStalls;
+
+        /** Type G: a bypassing load that overlapped an older store and
+         *  had to be squashed.  Deliberately separate from IEW's
+         *  memOrderViolationEvents, which counts violations that never
+         *  reached the predictor because IEW was already squashing. */
+        statistics::Scalar bypassViolations;
+
+        /** Instruction-address translations done for the predictor, and
+         *  how many of those failed and fell back to the virtual address.
+         *  The failure count is the important one: it should be about
+         *  zero, because the instruction was fetched and must therefore
+         *  be mappable. */
+        statistics::Scalar ipaTranslations;
+        statistics::Scalar ipaTranslationFailures;
     } stats;
 };
 

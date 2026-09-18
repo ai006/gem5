@@ -287,28 +287,6 @@ TEST(SSBP, EntriesAreIndependent)
     EXPECT_EQ(ssbp.getC4(PcB), 0);
 }
 
-/**
- * Two PCs sharing their low 12 bits share an entry and therefore train
- * each other.  That is not a defect: it is the index aliasing the paper
- * exploits, and section V-D fingerprints the predictor with it.  Pinned
- * here so Phase 3 has to make a deliberate decision when it replaces the
- * mask with the reverse-engineered 12-bit XOR hash, rather than changing
- * this behaviour by accident.
- */
-TEST(SSBP, CollidingPcsShareAnEntry)
-{
-    SSBP ssbp(testParams());
-
-    run(ssbp, PcA, "aaa");
-
-    EXPECT_EQ(ssbp.getC3(PcCollidesWithA), 15);
-    EXPECT_EQ(ssbp.getC4(PcCollidesWithA), 3);
-
-    // The collision is total, so the victim PC is already armed: its
-    // very first load waits and confirms instead of flushing.
-    EXPECT_EQ(run(ssbp, PcCollidesWithA, "a"), "B");
-}
-
 /** clear() is a full wipe of the table, so it discards both counters. */
 TEST(SSBP, ClearDiscardsTraining)
 {
@@ -413,4 +391,74 @@ TEST(SSBP, CounterMagnitudesAreConfigurable)
     // And type B now adds 4 rather than 16.
     run(ssbp, PcA, "a");
     EXPECT_EQ(ssbp.getC3(PcA), 2);
+}
+
+/**
+ * The reverse-engineered AMD hash, checked against hand-computed values
+ * (SS III-C-2, IV-B-1).  At 4096 entries the chunk width is 12, so bit i
+ * of the index is A_i ^ A_{i+12} ^ A_{i+24} ^ A_{i+36}.
+ *
+ * The last two cases matter most: those terms are zero for every real
+ * gem5 virtual PC, which is about 23 bits wide, so this is the only
+ * place they are exercised until the predictor is fed a physical
+ * address.
+ */
+TEST(SSBP, XorFoldMatchesThePaper)
+{
+    SSBP ssbp(testParams());
+
+    // Nothing above the low chunk: the fold is the identity.
+    ssbp.trainViolation(0x001);
+    EXPECT_EQ(ssbp.getC4(0x001), 1);
+
+    // Bit 12 folds onto bit 0, so this lands in the same entry as 0x001
+    // and inherits its counter rather than starting fresh.
+    EXPECT_EQ(ssbp.getC4(0x1000), 1);
+
+    // Bit 24 folds onto bit 0 as well.
+    EXPECT_EQ(ssbp.getC4(0x1000000), 1);
+
+    // And bit 36.  This is the term a 23-bit virtual PC can never reach.
+    EXPECT_EQ(ssbp.getC4(0x1000000000ULL), 1);
+
+    // An address differing only above bit 47 is outside the fold, so it
+    // shares the entry too.
+    EXPECT_EQ(ssbp.getC4(0x1000000000000ULL | 0x001), 1);
+}
+
+/**
+ * Two distinct PCs sharing a table entry train each other's counters:
+ * 0x1000 folds onto 0x001.  This is the property SS V-D fingerprints the
+ * predictor with, and the one an attacker relies on -- the victim's load
+ * inherits training it never performed.
+ */
+TEST(SSBP, CollidingPcsShareAnEntry)
+{
+    SSBP ssbp(testParams());
+
+    // Under mask these two would be different entries (0x001 vs 0x000).
+    run(ssbp, 0x001, "aaa");
+
+    EXPECT_EQ(ssbp.getC3(0x1000), 15);
+    EXPECT_EQ(ssbp.getC4(0x1000), 3);
+
+    // Already armed, so the victim's first load confirms rather than
+    // flushing -- inheritance, which is what the attack needs.
+    EXPECT_EQ(run(ssbp, 0x1000, "a"), "B");
+}
+
+/**
+ * A smaller table folds in smaller chunks rather than truncating the
+ * 12-bit hash, so every address bit still reaches the index.
+ */
+TEST(SSBP, XorFoldChunkWidthTracksTableSize)
+{
+    SSBPParams p = testParams();
+    p.numEntries = 256;           // chunk width 8
+    SSBP ssbp(p);
+
+    ssbp.trainViolation(0x001);
+
+    // Bit 8 folds onto bit 0 at this size, where at 4096 it would not.
+    EXPECT_EQ(ssbp.getC4(0x100), 1);
 }
