@@ -94,8 +94,9 @@ if env['CONF']['BUILD_ISA']:
 
     CompoundFlag('O3CPUAll', [ 'BAC', 'FTQ', 'Fetch', 'Decode', 'Rename',
         'IEW', 'Commit',
-        'IQ', 'ROB', 'FreeList', 'LSQ', 'LSQUnit', 'StoreSet', 'SSBP', 'MemDepUnit',
-        'DynInst', 'O3CPU', 'Activity', 'Scoreboard', 'Writeback' ])
+        'IQ', 'ROB', 'FreeList', 'LSQ', 'LSQUnit', 'StoreSet', 'SSBP',
+        'MemDepUnit', 'DynInst', 'O3CPU', 'Activity', 'Scoreboard',
+        'Writeback' ])
 
     SimObject('BaseO3Checker.py', sim_objects=['BaseO3Checker'])
     Source('checker.cc')
@@ -104,7 +105,15 @@ if env['CONF']['BUILD_ISA']:
     SimObject('O3CPU.py', sim_objects=[], tags=['isa'])
     SimObject('O3Checker.py', sim_objects=[], tags=['isa'])
 
-    # 'gem5 simobject' is required because SSBP derives from SimObject;
-    # it also brings in the trace machinery that ssbp.cc's DPRINTFs need.
+    # 'gem5 simobject' is required because SSBP derives from SimObject,
+    # and it also brings in the trace machinery ssbp.cc's DPRINTFs need.
+    #
+    # WARNING: ssbp.cc must not register any statistics.  Even a plain
+    # statistics::Scalar needs statistics::InfoAccess::info() from
+    # base/statistics.cc, which needs Root::_root from sim/root.cc, and
+    # from there params/Root.hh, memUsage, sim_clock and Time -- i.e. the
+    # simulator, linked into a unit test whose whole point is to run
+    # without one.  The predictor's counters live on MemDepUnitStats for
+    # exactly this reason; see IMPLEMENTATION_CHECKLIST.md.
     GTest('ssbp.test', 'ssbp.test.cc', 'ssbp.cc',
         with_tag('gem5 simobject'))

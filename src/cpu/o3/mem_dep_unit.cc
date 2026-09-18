@@ -46,6 +46,8 @@
 #include "cpu/o3/limits.hh"
 #include "cpu/o3/mem_dep_pred.hh"
 #include "debug/MemDepUnit.hh"
+#include "mem/request.hh"
+#include "sim/system.hh"
 #include "params/BaseO3CPU.hh"
 
 namespace gem5
@@ -113,8 +115,43 @@ MemDepUnit::MemDepUnitStats::MemDepUnitStats(statistics::Group *parent)
                "Number of conflicting stores."),
       ADD_STAT(predictedWaitNoProducer, statistics::units::Count::get(),
                "Number of times the predictor asked for a wait but no "
-               "older store was in flight to wait on.")
+               "older store was in flight to wait on."),
+      ADD_STAT(barrierSkippedPredictions, statistics::units::Count::get(),
+               "Number of loads for which no prediction was made at all "
+               "because a matching barrier was in flight."),
+      ADD_STAT(nonSpecSkippedPredictions, statistics::units::Count::get(),
+               "Number of loads that bypassed the predictor entirely "
+               "because they were inserted non-speculatively."),
+      ADD_STAT(predictedWaitLoads, statistics::units::Count::get(),
+               "Number of loads the predictor held back."),
+      ADD_STAT(predictedGoLoads, statistics::units::Count::get(),
+               "Number of loads the predictor allowed to bypass."),
+      ADD_STAT(confirmedWaits, statistics::units::Count::get(),
+               "Type B: a held-back load that did overlap the store it "
+               "waited for, so the wait was justified."),
+      ADD_STAT(needlessStalls, statistics::units::Count::get(),
+               "Type F: a held-back load that overlapped nothing, so the "
+               "stall bought nothing."),
+      ADD_STAT(bypassViolations, statistics::units::Count::get(),
+               "Type G: a bypassing load that overlapped an older store "
+               "and was squashed.  Counted where the predictor is told, "
+               "so it is lower than iew.memOrderViolationEvents, which "
+               "also counts violations IEW dropped while squashing."),
+      ADD_STAT(ipaTranslations, statistics::units::Count::get(),
+               "Instruction-address translations performed so the "
+               "predictor could be indexed physically."),
+      ADD_STAT(ipaTranslationFailures, statistics::units::Count::get(),
+               "Translations that failed and fell back to the virtual "
+               "address.  Should be about zero: the instruction was "
+               "fetched, so it must be mappable.")
 {
+    // Only a predictor that trains on the outcome of its own waits
+    // produces these, so they vanish from the output entirely rather
+    // than reading zero under store sets.
+    confirmedWaits.flags(statistics::nozero);
+    needlessStalls.flags(statistics::nozero);
+    ipaTranslations.flags(statistics::nozero);
+    ipaTranslationFailures.flags(statistics::nozero);
 }
 
 bool
@@ -189,6 +226,45 @@ MemDepUnit::insertBarrierSN(const DynInstPtr &barr_inst)
     }
 }
 
+Addr
+MemDepUnit::predictorIndexAddr(const DynInstPtr &inst)
+{
+    const Addr vaddr = inst->pcState().instAddr();
+
+    if (!depPred->wantsPhysicalIndex())
+        return vaddr;
+
+    ++stats.ipaTranslations;
+
+    gem5::ThreadContext *tc = inst->tcBase();
+
+    // Mirror the request fetch builds for this instruction, so the same
+    // translation is asked for: INST_FETCH through the instruction TLB.
+    // Using the data side would still return a plausible address while
+    // modelling the wrong structure.
+    RequestPtr req = std::make_shared<Request>(
+        vaddr, sizeof(uint32_t), Request::INST_FETCH,
+        inst->cpu->instRequestorId(), vaddr, inst->contextId());
+
+    req->taskId(inst->cpu->taskId());
+
+    Fault fault = tc->getMMUPtr()->translateFunctional(req, tc,
+                                                       BaseMMU::Execute);
+
+    // Fetch checks both of these, and so must this: a NoFault return can
+    // still hand back an address outside physical memory.
+    if (fault != NoFault || !inst->cpu->system->isMemAddr(req->getPaddr())) {
+        ++stats.ipaTranslationFailures;
+
+        DPRINTF(MemDepUnit, "IPA translation failed for PC %#x, falling "
+                "back to the virtual address\n", vaddr);
+
+        return vaddr;
+    }
+
+    return req->getPaddr();
+}
+
 void
 MemDepUnit::insert(const DynInstPtr &inst)
 {
@@ -213,6 +289,9 @@ MemDepUnit::insert(const DynInstPtr &inst)
     /** Set when a Kind B predictor asked for a wait and a store was
      *  actually found to wait on. */
     bool predicted_wait = false;
+    /** The address the predictor was indexed by, reused for the
+     *  delayed-load record so the two cannot diverge. */
+    Addr index_addr = 0;
 
     if ((inst->isLoad() || inst->isAtomic()) && hasLoadBarrier()) {
         DPRINTF(MemDepUnit, "%d load barriers in flight\n",
@@ -220,16 +299,38 @@ MemDepUnit::insert(const DynInstPtr &inst)
         producing_stores.insert(std::end(producing_stores),
                                 std::begin(loadBarrierSNs),
                                 std::end(loadBarrierSNs));
+
+        // This is an if / else if / else chain, so a barrier in flight
+        // means the predictor is never consulted at all.  Counted so that
+        // the predictor's own wait/go totals can be reconciled against
+        // insertedLoads instead of silently falling short.
+        if (inst->isLoad())
+            ++stats.barrierSkippedPredictions;
     } else if ((inst->isStore() || inst->isAtomic()) && hasStoreBarrier()) {
         DPRINTF(MemDepUnit, "%d store barriers in flight\n",
                 storeBarrierSNs.size());
         producing_stores.insert(std::end(producing_stores),
                                 std::begin(storeBarrierSNs),
                                 std::end(storeBarrierSNs));
+
+        if (inst->isLoad())
+            ++stats.barrierSkippedPredictions;
     } else {
         InstSeqNum dep = 0;
+
+        // Translated once here and reused by noteDelayedLoad() below, so
+        // the prediction and the record it creates cannot disagree.
+        index_addr = predictorIndexAddr(inst);
+
         MemDepPrediction pred =
-            depPred->predict(inst->pcState().instAddr(), inst->isLoad());
+            depPred->predict(index_addr, inst->isLoad());
+
+        if (inst->isLoad()) {
+            if (pred.kind == MemDepPrediction::NoDependence)
+                ++stats.predictedGoLoads;
+            else
+                ++stats.predictedWaitLoads;
+        }
 
         switch (pred.kind) {
           case MemDepPrediction::NoDependence:
@@ -312,8 +413,8 @@ MemDepUnit::insert(const DynInstPtr &inst)
                 assert(store_entries.size() == 1);
                 depPred->noteDelayedLoad(
                     inst->seqNum,
-                    inst->pcState().instAddr(),
-                    store_entries.front()->inst->pcState().instAddr());
+                    index_addr,
+                    predictorIndexAddr(store_entries.front()->inst));
             }
         } else {
             ++stats.conflictingStores;
@@ -327,6 +428,12 @@ MemDepUnit::insert(const DynInstPtr &inst)
         DPRINTF(MemDepUnit, "Inserting store/atomic PC %s [sn:%lli].\n",
                 inst->pcState(), inst->seqNum);
 
+        // Deliberately the virtual address, not predictorIndexAddr():
+        // store sets is the only predictor that consumes this, to key
+        // its last-fetched-store table, and it indexes virtually.  SSBP
+        // inherits the base class no-op, so translating here would cost
+        // a translation per store to feed a function that does nothing.
+        // Revisit if a physically-indexed predictor ever uses it.
         depPred->insertStore(inst->pcState().instAddr(), inst->seqNum,
                 inst->threadNumber);
         ++stats.insertedStores;
@@ -353,6 +460,9 @@ MemDepUnit::insertNonSpec(const DynInstPtr &inst)
 
         ++stats.insertedStores;
     } else if (inst->isLoad()) {
+        // This path routes through insertBarrier() and never reaches the
+        // predictor, so the load is shown to it neither here nor later.
+        ++stats.nonSpecSkippedPredictions;
         ++stats.insertedLoads;
     } else {
         panic("Unknown type! (most likely a barrier).");
@@ -469,8 +579,19 @@ MemDepUnit::completeInst(const DynInstPtr &inst)
 {
     wakeDependents(inst);
     //ssbp
-    if (inst->isLoad() && inst->effAddrValid())
-        depPred->loadExecuted(inst->seqNum, inst->effAddr, inst->effSize);
+    if (inst->isLoad() && inst->effAddrValid()) {
+        switch (depPred->loadExecuted(inst->seqNum, inst->effAddr,
+                                      inst->effSize)) {
+          case MemDepTraining::Confirmed:
+            ++stats.confirmedWaits;
+            break;
+          case MemDepTraining::Needless:
+            ++stats.needlessStalls;
+            break;
+          case MemDepTraining::None:
+            break;
+        }
+    }
     completed(inst);
     InstSeqNum barr_sn = inst->seqNum;
 
@@ -632,8 +753,10 @@ MemDepUnit::violation(const DynInstPtr &store_inst,
             " load: %#x, store: %#x\n", violating_load->pcState().instAddr(),
             store_inst->pcState().instAddr());
     // Tell the memory dependence unit of the violation.
-    depPred->violation(store_inst->pcState().instAddr(),
-            violating_load->pcState().instAddr());
+    ++stats.bypassViolations;
+
+    depPred->violation(predictorIndexAddr(store_inst),
+            predictorIndexAddr(violating_load));
 
 }
 

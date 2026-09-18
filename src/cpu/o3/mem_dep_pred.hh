@@ -69,6 +69,27 @@ struct MemDepPrediction
 };
 
 /**
+ * What a predictor learned when a load it held back finally executed.
+ *
+ * Reported back to MemDepUnit so the unit can count outcomes without
+ * knowing which predictor produced them, and so that the predictors
+ * themselves stay free of the statistics runtime -- a registered stat in
+ * a predictor's translation unit pulls statistics.cc, and from there
+ * Root, into any unit test that links it.
+ */
+enum class MemDepTraining
+{
+    /** The predictor never held this load back, so no prediction was
+     *  exercised and its state machine saw no input. */
+    None,
+    /** The load did overlap the store it waited for: the wait was
+     *  justified.  Type B of the paper's taxonomy. */
+    Confirmed,
+    /** The load overlapped nothing: the stall bought nothing.  Type F. */
+    Needless,
+};
+
+/**
  * Interface every memory dependence predictor implements.
  *
  * One instance per hardware thread, created by the configuration and
@@ -140,16 +161,30 @@ class MemDepPredictor : public SimObject
     noteProducerAddr(InstSeqNum sn, Addr store_addr, unsigned store_size)
     {}
 
-    /** Notes that a load has executed, so any wait can now be judged. */
-    virtual void
+    /** Notes that a load has executed, so any wait can now be judged.
+     *  @return What the predictor trained, if anything. */
+    virtual MemDepTraining
     loadExecuted(InstSeqNum sn, Addr load_addr, unsigned load_size)
-    {}
+    {
+        return MemDepTraining::None;
+    }
 
     /** Drops a delayed-load record without training it. */
     virtual void forgetDelayedLoad(InstSeqNum sn) {}
 
     /** False while the predictor still holds in-flight tracking. */
     virtual bool drained() const { return true; }
+
+    /**
+     * Whether this predictor wants to be indexed by the load
+     * instruction's physical address rather than its virtual one.
+     *
+     * Asked rather than assumed so that MemDepUnit, which is the only
+     * place that can translate, does not need to know which predictor it
+     * is holding.  Translation is not free, so a predictor that does not
+     * care keeps the default and pays nothing.
+     */
+    virtual bool wantsPhysicalIndex() const { return false; }
 };
 
 } // namespace o3
