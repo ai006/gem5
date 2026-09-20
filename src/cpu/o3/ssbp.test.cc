@@ -89,7 +89,14 @@ testParams()
     p.c3ViolationSet = 15;
     p.c4ForgivenOnC3Zero = false;
     p.ssbd = false;
+    // TEMPORARY -- goes with the alwaysBypass knob.
+    p.alwaysBypass = false;
 
+    // WARNING: SSBPParams is stack allocated here and its members are
+    // not default initialised, so every new parameter must be set
+    // above.  Miss one and it picks up whatever was on the stack --
+    // a bool reads as true about as often as not, so the symptom is a
+    // pile of unrelated golden-vector failures, not a missing field.
     return p;
 }
 
@@ -461,4 +468,27 @@ TEST(SSBP, XorFoldChunkWidthTracksTableSize)
 
     // Bit 8 folds onto bit 0 at this size, where at 4096 it would not.
     EXPECT_EQ(ssbp.getC4(0x100), 1);
+}
+
+// TEMPORARY -- verifies the sharedEntry instrumentation, to be removed
+// with it.  0x1000 and 0x2003 both fold to index 1: for PC < 2^24 the
+// index is (PC & 0xfff) ^ (PC >> 12), so 0^1 == 3^2 == 1.
+TEST(SSBP, SharedEntryIsReportedOnCollision)
+{
+    SSBP ssbp(testParams());
+
+    // First PC to touch the entry: nothing to share with yet.
+    EXPECT_FALSE(ssbp.predict(0x1000, true).sharedEntry);
+    EXPECT_FALSE(ssbp.predict(0x1000, true).sharedEntry);
+
+    // A second, colliding PC.  Its own access is the one that proves
+    // the collision, so it must report true immediately.
+    EXPECT_TRUE(ssbp.predict(0x2003, true).sharedEntry);
+    EXPECT_TRUE(ssbp.predict(0x1000, true).sharedEntry);
+
+    // A PC landing on an untouched entry must stay clean.
+    EXPECT_FALSE(ssbp.predict(0x4000, true).sharedEntry);
+
+    // Stores never consult the table at all.
+    EXPECT_FALSE(ssbp.predict(0x1000, false).sharedEntry);
 }

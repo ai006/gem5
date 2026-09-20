@@ -143,7 +143,12 @@ MemDepUnit::MemDepUnitStats::MemDepUnitStats(statistics::Group *parent)
       ADD_STAT(ipaTranslationFailures, statistics::units::Count::get(),
                "Translations that failed and fell back to the virtual "
                "address.  Should be about zero: the instruction was "
-               "fetched, so it must be mappable.")
+               "fetched, so it must be mappable."),
+      ADD_STAT(sharedEntryPredictions, statistics::units::Count::get(),
+               "Predictions made on a table entry another load PC had "
+               "already used, i.e. the index hash collided.  Zero means "
+               "the table geometry and index hash cannot have mattered "
+               "on this workload.  A lower bound.")
 {
     // Only a predictor that trains on the outcome of its own waits
     // produces these, so they vanish from the output entirely rather
@@ -152,6 +157,7 @@ MemDepUnit::MemDepUnitStats::MemDepUnitStats(statistics::Group *parent)
     needlessStalls.flags(statistics::nozero);
     ipaTranslations.flags(statistics::nozero);
     ipaTranslationFailures.flags(statistics::nozero);
+    sharedEntryPredictions.flags(statistics::nozero);
 }
 
 bool
@@ -330,6 +336,12 @@ MemDepUnit::insert(const DynInstPtr &inst)
                 ++stats.predictedGoLoads;
             else
                 ++stats.predictedWaitLoads;
+
+            // TEMPORARY INSTRUMENTATION.  Counted regardless of the
+            // answer: the question is whether the entry was shared, not
+            // whether sharing changed the outcome.
+            if (pred.sharedEntry)
+                ++stats.sharedEntryPredictions;
         }
 
         switch (pred.kind) {

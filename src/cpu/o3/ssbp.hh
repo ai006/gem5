@@ -163,6 +163,17 @@ class SSBP : public MemDepPredictor
                 uint8_t c3;
                 uint8_t c4;
 
+                /** TEMPORARY INSTRUMENTATION -- not modelled hardware.
+                 *  The last two distinct load PCs to consult this entry.
+                 *  The silicon entry is 8 bits wide (Table IV); this is
+                 *  16 bytes bolted onto it, and exists only to answer
+                 *  whether two load PCs ever share an entry on a given
+                 *  workload.  Delete with sharedEntryPredictions once
+                 *  that question is settled; see the Cleanup section of
+                 *  IMPLEMENTATION_CHECKLIST.md.
+                 */
+                Addr contributors[2] = {MaxAddr, MaxAddr};
+
             public:
                 SSBPEntry() : c3(0), c4(0) { }
                 void setC3(uint8_t _c3) { c3 = _c3; }
@@ -170,6 +181,25 @@ class SSBP : public MemDepPredictor
                 uint8_t getC3() const { return c3; }
                 uint8_t getC4() const { return c4; }
                 void reset();
+
+                /** TEMPORARY INSTRUMENTATION.  Records that load_PC used
+                 *  this entry, keeping the two most recent distinct PCs.
+                 */
+                void
+                noteContributor(Addr load_PC)
+                {
+                    if (contributors[0] == load_PC)
+                        return;
+
+                    contributors[1] = contributors[0];
+                    contributors[0] = load_PC;
+                }
+
+                /** TEMPORARY INSTRUMENTATION.  True once two distinct
+                 *  load PCs have used this entry, i.e. the index hash
+                 *  collided.
+                 */
+                bool shared() const { return contributors[1] != MaxAddr; }
 
         };
         std::vector<SSBPEntry> ssbpEntries;
@@ -193,6 +223,19 @@ class SSBP : public MemDepPredictor
          *  so no load is allowed to bypass an unresolved store.
          */
         bool ssbd = false;
+
+        /** TEMPORARY EXPERIMENT KNOB -- delete after the evaluation runs;
+         *  see the Cleanup section of IMPLEMENTATION_CHECKLIST.md.
+         *
+         *  The mirror of ssbd: never hold a load back, so every load
+         *  issues ahead of unresolved stores and every real alias is
+         *  caught as a violation instead of being avoided.  This is the
+         *  no-predictor control.  Because prediction is modelled as zero
+         *  latency, a predictor that never says wait is behaviourally
+         *  identical to having no predictor at all, so this is an exact
+         *  control rather than an approximation of one.
+         */
+        bool alwaysBypass = false;
 
         /** Index by the instruction's physical address.  See
          *  wantsPhysicalIndex(). */

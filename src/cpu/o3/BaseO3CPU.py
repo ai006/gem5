@@ -162,6 +162,16 @@ class SSBP(MemDepPredictor):
         "[Block] so the predictor always reports aliasing and no load is "
         "allowed to bypass an unresolved store",
     )
+    # TEMPORARY EXPERIMENT KNOB -- delete after the evaluation runs; see
+    # the Cleanup section of IMPLEMENTATION_CHECKLIST.md.
+    alwaysBypass = Param.Bool(
+        False,
+        "The mirror of ssbd: never hold a load back, so every load "
+        "issues ahead of unresolved stores and every real alias is "
+        "caught as a violation.  The no-predictor control, against "
+        "which the predictors have to justify themselves.  Mutually "
+        "exclusive with ssbd",
+    )
 
 
 class BaseO3CPU(BaseCPU):

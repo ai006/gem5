@@ -43,6 +43,11 @@ SSBP::SSBPEntry::reset()
 {
     setC3(0);
     setC4(0);
+
+    // TEMPORARY INSTRUMENTATION.  The entry is being torn down, so the
+    // record of who used it goes with it.
+    contributors[0] = MaxAddr;
+    contributors[1] = MaxAddr;
 }
 
 SSBP::SSBP(const Params &p)
@@ -55,6 +60,7 @@ SSBP::SSBP(const Params &p)
       C3Increment(p.c3Increment),
       c4ForgivenOnC3Zero(p.c4ForgivenOnC3Zero),
       ssbd(p.ssbd),
+      alwaysBypass(p.alwaysBypass),
       useIPA(p.useIPA)
 {
     DPRINTF(SSBP, "SSBP: Creating SSBP object.\n");
@@ -79,8 +85,19 @@ SSBP::SSBP(const Params &p)
               C3Violation, C3Max);
     }
 
+    // TEMPORARY EXPERIMENT KNOB.  Without this check ssbd silently wins
+    // in predictWait() and the run produces the exact opposite of the
+    // experiment that was asked for, while looking entirely plausible.
+    if (ssbd && alwaysBypass) {
+        fatal("SSBP: ssbd and alwaysBypass are opposites; set one.\n");
+    }
+
     if (ssbd) {
         DPRINTF(SSBP, "SSBP: SSBD set; every load will be held back.\n");
+    }
+
+    if (alwaysBypass) {
+        DPRINTF(SSBP, "SSBP: alwaysBypass set; no load will wait.\n");
     }
 
     indexBits = floorLog2(numEntries);
@@ -118,6 +135,13 @@ SSBP::predictWait(Addr load_PC) const
     if (ssbd)
         return true;
 
+    // TEMPORARY EXPERIMENT KNOB.  Deliberately ahead of the counters
+    // rather than expressed by zeroing thresholds: Phase 4 changes the
+    // rule to (C0 > 0 || C3 > 0), and a threshold trick would silently
+    // stop meaning "always bypass" the moment C0 exists.
+    if (alwaysBypass)
+        return false;
+
     const SSBPEntry &entry = ssbpEntries[getIndex(load_PC)];
     return (entry.getC3() > 0);
 }
@@ -131,11 +155,21 @@ SSBP::predict(Addr pc, bool is_load)
     if (!is_load)
         return {};
 
-    if (!predictWait(pc))
-        return {};
+    MemDepPrediction pred;
+
+    // TEMPORARY INSTRUMENTATION.  Note this PC *before* asking whether
+    // the entry is shared: the load that proves the collision is the one
+    // whose own access made the entry shared, so checking first would
+    // miss it and only start counting from the access after.
+    SSBPEntry &entry = ssbpEntries[getIndex(pc)];
+    entry.noteContributor(pc);
+    pred.sharedEntry = entry.shared();
 
     // SSBP names no store, so MemDepUnit has to resolve which one.
-    return {MemDepPrediction::YoungestOlderStore, 0};
+    if (predictWait(pc))
+        pred.kind = MemDepPrediction::YoungestOlderStore;
+
+    return pred;
 }
 
 void

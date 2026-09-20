@@ -66,6 +66,15 @@ struct MemDepPrediction
 
     /** Only meaningful when kind is NamedStore. */
     InstSeqNum producer = 0;
+
+    /** TEMPORARY INSTRUMENTATION -- not part of the prediction.  True
+     *  when the table entry consulted had already been used by a
+     *  different PC, i.e. the index hash collided.  Nothing acts on it;
+     *  MemDepUnit only counts it.  Left false by any predictor that does
+     *  not track this.  Delete with sharedEntryPredictions; see the
+     *  Cleanup section of IMPLEMENTATION_CHECKLIST.md.
+     */
+    bool sharedEntry = false;
 };
 
 /**

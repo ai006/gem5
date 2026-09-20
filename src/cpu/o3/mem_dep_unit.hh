@@ -352,6 +352,21 @@ class MemDepUnit
          *  be mappable. */
         statistics::Scalar ipaTranslations;
         statistics::Scalar ipaTranslationFailures;
+        /** TEMPORARY INSTRUMENTATION -- delete once the question is
+         *  settled; see the Cleanup section of
+         *  IMPLEMENTATION_CHECKLIST.md.
+         *
+         *  Predictions made on a table entry that another load PC had
+         *  already used, i.e. the index hash collided.  Zero means the
+         *  table geometry, the index hash and physical indexing cannot
+         *  have affected this run at all, which is the only way to tell
+         *  a workload that exercises the structure from one that merely
+         *  executes a lot of loads.
+         *
+         *  A lower bound: the check is online, so accesses made before
+         *  the second PC first appears are not counted.  It therefore
+         *  never reports a collision that did not happen. */
+        statistics::Scalar sharedEntryPredictions;
     } stats;
 };
 
